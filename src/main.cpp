@@ -109,6 +109,7 @@ void streamCurrentPoseGCode() {
 void applyVehicleSelection(uint8_t vehicle) {
   currentVehicle = vehicle;
   speedMmPerSec = 0;
+  poseDirty = false;
 
   if (currentVehicle == 0) {
     return;
