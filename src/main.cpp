@@ -9,11 +9,11 @@ constexpr uint16_t kVehicleSettleMs = 3000;
 constexpr uint16_t kMaxGCodeRateMs = 500;  // 2 Hz
 
 // TODO: assign final GPIO mappings.
-constexpr uint8_t kSpeedEncoderA = 32;
-constexpr uint8_t kSpeedEncoderB = 33;
-constexpr uint8_t kBearingEncoderA = 25;
-constexpr uint8_t kBearingEncoderB = 26;
-constexpr uint8_t kVehicleInputs[kVehicleInputCount] = {4, 16, 17, 18, 19};
+constexpr uint8_t kSpeedEncoderA = 13;
+constexpr uint8_t kSpeedEncoderB = 12;
+constexpr uint8_t kBearingEncoderA = 4;
+constexpr uint8_t kBearingEncoderB = 14;
+constexpr uint8_t kVehicleInputs[kVehicleInputCount] = {16, 27, 17, 26, 25};
 
 struct Encoder {
   uint8_t pinA;
