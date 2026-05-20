@@ -7,6 +7,7 @@ constexpr int8_t kSpeedMin = -50;
 constexpr int8_t kSpeedMax = 50;
 constexpr uint16_t kVehicleSettleMs = 3000;
 constexpr uint16_t kMaxGCodeRateMs = 500;  // 2 Hz
+constexpr int8_t kSpeedDeadbandMmPerSec = 0;  // speeds within [-deadband, +deadband] are treated as stopped
 
 // TODO: assign final GPIO mappings.
 constexpr uint8_t kSpeedEncoderA = 13;
@@ -171,7 +172,14 @@ void processEncoders() {
 }
 
 void processPoseOutput() {
-  if (!poseDirty || currentVehicle == 0) {
+  if (currentVehicle == 0) {
+    return;
+  }
+
+  const bool isMoving =
+      (speedMmPerSec > kSpeedDeadbandMmPerSec || speedMmPerSec < -kSpeedDeadbandMmPerSec);
+
+  if (!poseDirty && !isMoving) {
     return;
   }
 
