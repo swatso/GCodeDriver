@@ -9,12 +9,16 @@ constexpr uint16_t kVehicleSettleMs = 3000;
 constexpr uint16_t kMaxGCodeRateMs = 500;  // 2 Hz
 constexpr int8_t kSpeedDeadbandMmPerSec = 0;  // speeds within [-deadband, +deadband] are treated as stopped
 
-// TODO: assign final GPIO mappings.
+// GPIO mappings.
 constexpr uint8_t kSpeedEncoderA = 13;
 constexpr uint8_t kSpeedEncoderB = 12;
 constexpr uint8_t kBearingEncoderA = 4;
 constexpr uint8_t kBearingEncoderB = 14;
 constexpr uint8_t kVehicleInputs[kVehicleInputCount] = {16, 27, 17, 26, 25};
+
+// Bed Size 265, 225
+constexpr uint16_t kBedSizeX = 265;
+constexpr uint16_t kBedSizeY = 225;
 
 struct Encoder {
   uint8_t pinA;
@@ -93,7 +97,17 @@ void streamCurrentPoseGCode() {
   const float distanceMm = static_cast<float>(speedMmPerSec) * dtSec;
   const float headingRad = toRadians(static_cast<float>(bearingDeg));
   pose.x += distanceMm * cosf(headingRad);
+  if(pose.x < 0) {
+    pose.x = 0;
+  } else if(pose.x > kBedSizeX) {
+    pose.x = kBedSizeX;
+  }
   pose.y += distanceMm * sinf(headingRad);
+  if(pose.y < 0) {
+    pose.y = 0;
+  } else if(pose.y > kBedSizeY) {
+    pose.y = kBedSizeY;
+  }
   pose.heading = static_cast<float>(bearingDeg);
 
   Serial.print("G1 X");
