@@ -211,7 +211,7 @@ void processPoseOutput() {
 }  // namespace
 
 void setup() {
-  Serial2.begin(115200, SERIAL_8N1, kCncSerialRx, kCncSerialTx);
+  Serial2.begin(250000, SERIAL_8N1, kCncSerialRx, kCncSerialTx);
 
   for (uint8_t i = 0; i < kVehicleCount; ++i) {
     vehiclePoses[i] = kInitialVehiclePoses[i];
