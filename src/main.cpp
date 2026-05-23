@@ -2,6 +2,10 @@
 
 #include "vehicle_config.h"
 
+#ifndef GCODE_USB_DEBUG
+#define GCODE_USB_DEBUG 0
+#endif
+
 namespace {
 constexpr int8_t kSpeedMin = -50;
 constexpr int8_t kSpeedMax = 50;
@@ -17,6 +21,7 @@ constexpr uint8_t kBearingEncoderB = 14;
 constexpr uint8_t kCncSerialTx = 22;
 constexpr uint8_t kCncSerialRx = 23;
 constexpr uint8_t kVehicleInputs[kVehicleInputCount] = {16, 27, 17, 26, 25};
+constexpr uint32_t kUsbSerialBaudRate = 115200;
 
 // Bed Size 265, 225
 constexpr uint16_t kBedSizeX = 265;
@@ -59,6 +64,12 @@ bool poseDirty = false;
 uint32_t lastPoseUpdateMs = 0;
 uint32_t lastGCodeSentMs = 0;
 
+#if GCODE_USB_DEBUG
+constexpr size_t kCncRxBufferSize = 96;
+char cncRxBuffer[kCncRxBufferSize] = {};
+size_t cncRxLength = 0;
+#endif
+
 float toRadians(float deg) { return deg * DEG_TO_RAD; }
 
 int16_t normalizeBearing(int16_t value) {
@@ -81,9 +92,16 @@ int8_t clampSpeed(int32_t value) {
   return static_cast<int8_t>(value);
 }
 
+void streamLine(const char* line) {
+  Serial2.println(line);
+#if GCODE_USB_DEBUG
+  Serial.println(line);
+#endif
+}
+
 void streamLines(const char* const* lines, size_t count) {
   for (size_t i = 0; i < count; ++i) {
-    Serial2.println(lines[i]);
+    streamLine(lines[i]);
   }
 }
 
@@ -112,16 +130,39 @@ void streamCurrentPoseGCode() {
   }
   pose.heading = static_cast<float>(bearingDeg);
 
-  Serial2.print("G1 X");
-  Serial2.print(pose.x, 3);
-  Serial2.print(" Y");
-  Serial2.print(pose.y, 3);
-  Serial2.print(" Z");
-  Serial2.println(pose.heading, 3);
+  char gcodeLine[48];
+  snprintf(gcodeLine, sizeof(gcodeLine), "G1 X%.3f Y%.3f Z%.3f", pose.x, pose.y,
+           pose.heading);
+  streamLine(gcodeLine);
 
   lastPoseUpdateMs = nowMs;
   lastGCodeSentMs = nowMs;
 }
+
+#if GCODE_USB_DEBUG
+void processCncSerialInput() {
+  while (Serial2.available() > 0) {
+    const char ch = static_cast<char>(Serial2.read());
+
+    if (ch == '\r' || ch == '\n') {
+      if (cncRxLength > 0) {
+        Serial.print("Marlin:");
+        Serial.println(cncRxBuffer);
+        cncRxLength = 0;
+        cncRxBuffer[0] = '\0';
+      }
+      continue;
+    }
+
+    if (cncRxLength < (kCncRxBufferSize - 1)) {
+      cncRxBuffer[cncRxLength++] = ch;
+      cncRxBuffer[cncRxLength] = '\0';
+    }
+  }
+}
+#else
+void processCncSerialInput() {}
+#endif
 
 void applyVehicleSelection(uint8_t vehicle) {
   currentVehicle = vehicle;
@@ -211,6 +252,9 @@ void processPoseOutput() {
 }  // namespace
 
 void setup() {
+#if GCODE_USB_DEBUG
+  Serial.begin(kUsbSerialBaudRate);
+#endif
   Serial2.begin(250000, SERIAL_8N1, kCncSerialRx, kCncSerialTx);
 
   for (uint8_t i = 0; i < kVehicleCount; ++i) {
@@ -233,6 +277,7 @@ void setup() {
 }
 
 void loop() {
+  processCncSerialInput();
   processVehicleSelection();
   processEncoders();
   processPoseOutput();
