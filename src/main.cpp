@@ -14,6 +14,8 @@ constexpr uint8_t kSpeedEncoderA = 13;
 constexpr uint8_t kSpeedEncoderB = 12;
 constexpr uint8_t kBearingEncoderA = 4;
 constexpr uint8_t kBearingEncoderB = 14;
+constexpr uint8_t kCncSerialTx = 22;
+constexpr uint8_t kCncSerialRx = 23;
 constexpr uint8_t kVehicleInputs[kVehicleInputCount] = {16, 27, 17, 26, 25};
 
 // Bed Size 265, 225
@@ -81,7 +83,7 @@ int8_t clampSpeed(int32_t value) {
 
 void streamLines(const char* const* lines, size_t count) {
   for (size_t i = 0; i < count; ++i) {
-    Serial.println(lines[i]);
+    Serial2.println(lines[i]);
   }
 }
 
@@ -110,12 +112,12 @@ void streamCurrentPoseGCode() {
   }
   pose.heading = static_cast<float>(bearingDeg);
 
-  Serial.print("G1 X");
-  Serial.print(pose.x, 3);
-  Serial.print(" Y");
-  Serial.print(pose.y, 3);
-  Serial.print(" Z");
-  Serial.println(pose.heading, 3);
+  Serial2.print("G1 X");
+  Serial2.print(pose.x, 3);
+  Serial2.print(" Y");
+  Serial2.print(pose.y, 3);
+  Serial2.print(" Z");
+  Serial2.println(pose.heading, 3);
 
   lastPoseUpdateMs = nowMs;
   lastGCodeSentMs = nowMs;
@@ -209,7 +211,7 @@ void processPoseOutput() {
 }  // namespace
 
 void setup() {
-  Serial.begin(115200);
+  Serial2.begin(115200, SERIAL_8N1, kCncSerialRx, kCncSerialTx);
 
   for (uint8_t i = 0; i < kVehicleCount; ++i) {
     vehiclePoses[i] = kInitialVehiclePoses[i];
