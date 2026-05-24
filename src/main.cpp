@@ -10,7 +10,7 @@ namespace {
 constexpr int8_t kSpeedMin = -50;
 constexpr int8_t kSpeedMax = 50;
 constexpr uint16_t kVehicleSettleMs = 3000;
-constexpr uint16_t kMaxGCodeRateMs = 200;  // 20 Hz
+constexpr uint16_t kMaxGCodeRateMs = 200;  // 5 Hz
 constexpr int8_t kSpeedDeadbandMmPerSec = 5;  // speeds within [-deadband, +deadband] are treated as stopped
 
 // GPIO mappings.
@@ -130,9 +130,14 @@ void streamCurrentPoseGCode() {
   }
   pose.heading = static_cast<float>(bearingDeg);
 
-  char gcodeLine[48];
-  snprintf(gcodeLine, sizeof(gcodeLine), "G1 X%.3f Y%.3f Z%.3f", pose.x, pose.y,
-           pose.heading);
+  const float updatesPerSecond = 1000.0F / static_cast<float>(kMaxGCodeRateMs);
+  const float distancePerUpdateMm =
+      fabsf(static_cast<float>(speedMmPerSec)) / updatesPerSecond;
+  const float feedrateMmPerMin = distancePerUpdateMm * updatesPerSecond * 60.0F;
+
+  char gcodeLine[64];
+  snprintf(gcodeLine, sizeof(gcodeLine), "G1 X%.3f Y%.3f Z%.3f F%.1f", pose.x, pose.y,
+           pose.heading, feedrateMmPerMin);
   streamLine(gcodeLine);
 
   lastPoseUpdateMs = nowMs;
