@@ -10,7 +10,7 @@ namespace {
 constexpr int8_t kSpeedMin = -50;
 constexpr int8_t kSpeedMax = 50;
 constexpr uint16_t kVehicleSettleMs = 3000;
-constexpr uint16_t kMaxGCodeRateMs = 200;  // 5 Hz
+constexpr uint16_t kMaxGCodeRateMs = 1000;  // 1 Hz
 constexpr int8_t kSpeedDeadbandMmPerSec = 5;  // speeds within [-deadband, +deadband] are treated as stopped
 
 // GPIO mappings.
@@ -73,10 +73,10 @@ size_t cncRxLength = 0;
 float toRadians(float deg) { return deg * DEG_TO_RAD; }
 
 int16_t normalizeBearing(int16_t value) {
-  while (value < 0) {
+  while (value < -20) {
     value += 360;
   }
-  while (value > 360) {
+  while (value > 400) {
     value -= 360;
   }
   return value;
