@@ -3,15 +3,15 @@
 #include "vehicle_config.h"
 
 #ifndef GCODE_USB_DEBUG
-#define GCODE_USB_DEBUG 0
+#define GCODE_USB_DEBUG 1
 #endif
 
 namespace {
 constexpr int8_t kSpeedMin = -50;
 constexpr int8_t kSpeedMax = 50;
 constexpr uint16_t kVehicleSettleMs = 3000;
-constexpr uint16_t kMaxGCodeRateMs = 500;  // 2 Hz
-constexpr int8_t kSpeedDeadbandMmPerSec = 0;  // speeds within [-deadband, +deadband] are treated as stopped
+constexpr uint16_t kMaxGCodeRateMs = 200;  // 20 Hz
+constexpr int8_t kSpeedDeadbandMmPerSec = 5;  // speeds within [-deadband, +deadband] are treated as stopped
 
 // GPIO mappings.
 constexpr uint8_t kSpeedEncoderA = 13;
@@ -116,13 +116,13 @@ void streamCurrentPoseGCode() {
 
   const float distanceMm = static_cast<float>(speedMmPerSec) * dtSec;
   const float headingRad = toRadians(static_cast<float>(bearingDeg));
-  pose.x += distanceMm * cosf(headingRad);
+  pose.x += distanceMm * sinf(headingRad);
   if(pose.x < 0) {
     pose.x = 0;
   } else if(pose.x > kBedSizeX) {
     pose.x = kBedSizeX;
   }
-  pose.y += distanceMm * sinf(headingRad);
+  pose.y += distanceMm * cosf(headingRad);
   if(pose.y < 0) {
     pose.y = 0;
   } else if(pose.y > kBedSizeY) {
