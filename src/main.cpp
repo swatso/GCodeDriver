@@ -12,6 +12,7 @@ constexpr int8_t kSpeedMax = 50;
 constexpr uint16_t kVehicleSettleMs = 3000;
 constexpr uint16_t kMaxGCodeRateMs = 1000;  // 1 Hz
 constexpr int8_t kSpeedDeadbandMmPerSec = 5;  // speeds within [-deadband, +deadband] are treated as stopped
+constexpr float kHeadingOnlyFeedrateDegPerSec = 30.0F;
 
 // GPIO mappings.
 constexpr uint8_t kSpeedEncoderA = 13;
@@ -128,12 +129,16 @@ void streamCurrentPoseGCode() {
   } else if(pose.y > kBedSizeY) {
     pose.y = kBedSizeY;
   }
+  const float previousHeading = pose.heading;
   pose.heading = static_cast<float>(bearingDeg);
 
   const float updatesPerSecond = 1000.0F / static_cast<float>(kMaxGCodeRateMs);
   const float distancePerUpdateMm =
       fabsf(static_cast<float>(speedMmPerSec)) / updatesPerSecond;
-  const float feedrateMmPerMin = distancePerUpdateMm * updatesPerSecond * 60.0F;
+  float feedrateMmPerMin = distancePerUpdateMm * updatesPerSecond * 60.0F;
+  if (speedMmPerSec == 0 && previousHeading != pose.heading) {
+    feedrateMmPerMin = kHeadingOnlyFeedrateDegPerSec * 60.0F;
+  }
 
   char gcodeLine[64];
   snprintf(gcodeLine, sizeof(gcodeLine), "G1 X%.3f Y%.3f Z%.3f F%.1f", pose.x, pose.y,
