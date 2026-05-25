@@ -126,13 +126,13 @@ void streamCurrentPoseGCode() {
 
   const float distanceMm = effectiveSpeedMmPerSec * dtSec;
   const float headingRad = toRadians(static_cast<float>(bearingDeg));
-  pose.x += distanceMm * sinf(headingRad);
+  pose.x += distanceMm * cosf(headingRad);
   if(pose.x < 0) {
     pose.x = 0;
   } else if(pose.x > kBedSizeX) {
     pose.x = kBedSizeX;
   }
-  pose.y += distanceMm * cosf(headingRad);
+  pose.y += distanceMm * sinf(headingRad);
   if(pose.y < 0) {
     pose.y = 0;
   } else if(pose.y > kBedSizeY) {
