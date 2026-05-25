@@ -11,7 +11,7 @@ constexpr int8_t kSpeedMin = -50;
 constexpr int8_t kSpeedMax = 50;
 constexpr uint16_t kVehicleSettleMs = 3000;
 constexpr uint16_t kMaxGCodeRateMs = 1000;  // 1 Hz
-constexpr int8_t kSpeedDeadbandMmPerSec = 5;  // speeds within [-deadband, +deadband] are treated as stopped
+constexpr int8_t kSpeedDeadbandMmPerSec = 2;  // speeds within [-deadband, +deadband] are treated as stopped
 constexpr float kHeadingOnlyFeedrateDegPerSec = 30.0F;
 
 // GPIO mappings.
@@ -84,6 +84,7 @@ int16_t normalizeBearing(int16_t value) {
 }
 
 int8_t clampSpeed(int32_t value) {
+  // Clamping to int8_t range just in case, but the encoder deltas should prevent overflow.
   if (value < kSpeedMin) {
     return kSpeedMin;
   }
@@ -96,6 +97,7 @@ int8_t clampSpeed(int32_t value) {
 void streamLine(const char* line) {
   Serial2.println(line);
 #if GCODE_USB_DEBUG
+  Serial.printf("Speed: %d mm/s, Bearing: %d deg -> ", speedMmPerSec, bearingDeg);
   Serial.println(line);
 #endif
 }
