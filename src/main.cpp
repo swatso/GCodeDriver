@@ -109,9 +109,9 @@ void streamLines(const char* const* lines, size_t count) {
 }
 
 void streamCurrentPoseGCode() {
-  if (currentVehicle == 0) {
-    return;
-  }
+//  if (currentVehicle == 0) {
+//    return;
+//  }
 
   const uint32_t nowMs = millis();
   const float dtSec = static_cast<float>(nowMs - lastPoseUpdateMs) / 1000.0F;
@@ -126,13 +126,13 @@ void streamCurrentPoseGCode() {
 
   const float distanceMm = effectiveSpeedMmPerSec * dtSec;
   const float headingRad = toRadians(static_cast<float>(bearingDeg));
-  pose.x += distanceMm * cosf(headingRad);
+  pose.x -= distanceMm * pose.forward * sinf(headingRad);
   if(pose.x < 0) {
     pose.x = 0;
   } else if(pose.x > kBedSizeX) {
     pose.x = kBedSizeX;
   }
-  pose.y += distanceMm * sinf(headingRad);
+  pose.y += distanceMm * pose.forward * cosf(headingRad);
   if(pose.y < 0) {
     pose.y = 0;
   } else if(pose.y > kBedSizeY) {
@@ -187,14 +187,15 @@ void applyVehicleSelection(uint8_t vehicle) {
   speedMmPerSec = 0;
   poseDirty = false;
 
-  if (currentVehicle == 0) {
-    return;
-  }
+  //if (currentVehicle == 0) {
+  //  return;
+ // }
 
+  streamLines(kVehicleDeselectGCode[currentVehicle - 1], 3);
   bearingDeg = normalizeBearing(static_cast<int16_t>(vehiclePoses[currentVehicle].heading));
   lastPoseUpdateMs = millis();
   lastGCodeSentMs = lastPoseUpdateMs - kMaxGCodeRateMs;
-
+  streamCurrentPoseGCode();
   streamLines(kVehicleSelectGCode[currentVehicle - 1], 2);
 }
 
