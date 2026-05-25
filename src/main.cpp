@@ -117,7 +117,14 @@ void streamCurrentPoseGCode() {
   const float dtSec = static_cast<float>(nowMs - lastPoseUpdateMs) / 1000.0F;
   Pose& pose = vehiclePoses[currentVehicle];
 
-  const float distanceMm = static_cast<float>(speedMmPerSec) * dtSec;
+  // Treat speed as zero when within the deadband, consistent with processPoseOutput().
+  // This prevents tiny positional drift and ensures the heading-only feedrate is applied
+  // correctly when the speed encoder oscillates near zero.
+  const bool effectivelyStationary =
+      (speedMmPerSec <= kSpeedDeadbandMmPerSec && speedMmPerSec >= -kSpeedDeadbandMmPerSec);
+  const float effectiveSpeedMmPerSec = effectivelyStationary ? 0.0F : static_cast<float>(speedMmPerSec);
+
+  const float distanceMm = effectiveSpeedMmPerSec * dtSec;
   const float headingRad = toRadians(static_cast<float>(bearingDeg));
   pose.x += distanceMm * sinf(headingRad);
   if(pose.x < 0) {
@@ -135,10 +142,9 @@ void streamCurrentPoseGCode() {
   pose.heading = static_cast<float>(bearingDeg);
 
   const float updatesPerSecond = 1000.0F / static_cast<float>(kMaxGCodeRateMs);
-  const float distancePerUpdateMm =
-      fabsf(static_cast<float>(speedMmPerSec)) / updatesPerSecond;
+  const float distancePerUpdateMm = fabsf(effectiveSpeedMmPerSec) / updatesPerSecond;
   float feedrateMmPerMin = distancePerUpdateMm * updatesPerSecond * 60.0F;
-  if (speedMmPerSec == 0 && previousHeading != pose.heading) {
+  if (effectivelyStationary && previousHeading != pose.heading) {
     feedrateMmPerMin = kHeadingOnlyFeedrateDegPerSec * 60.0F;
   }
 
@@ -223,7 +229,15 @@ void processVehicleSelection() {
 void processEncoders() {
   const int8_t speedDelta = speedEncoder.readDelta();
   if (speedDelta != 0) {
-    const int8_t newSpeed = clampSpeed(static_cast<int32_t>(speedMmPerSec) + speedDelta);
+    int8_t newSpeed = clampSpeed(static_cast<int32_t>(speedMmPerSec) + speedDelta);
+    // Snap to zero when moving towards zero and landing within the deadband.
+    // This allows speed to be set to exactly zero despite encoder noise near zero.
+    const bool movingTowardsZero = (abs(newSpeed) < abs(speedMmPerSec));
+    const bool withinDeadband =
+        (newSpeed <= kSpeedDeadbandMmPerSec && newSpeed >= -kSpeedDeadbandMmPerSec);
+    if (movingTowardsZero && withinDeadband) {
+      newSpeed = 0;
+    }
     if (newSpeed != speedMmPerSec) {
       speedMmPerSec = newSpeed;
       poseDirty = true;
@@ -233,8 +247,12 @@ void processEncoders() {
   const int8_t bearingDelta = bearingEncoder.readDelta();
   if (bearingDelta != 0) {
     const int16_t newBearing = normalizeBearing(static_cast<int16_t>(bearingDeg) + bearingDelta);
-    if (newBearing != bearingDeg) {
-      bearingDeg = newBearing;
+    // Snap bearing to zero when a step towards zero would land within one degree.
+    // This allows heading to be set to exactly zero (north) despite encoder noise.
+    const int16_t snappedBearing =
+        (abs(newBearing) < abs(bearingDeg) && abs(newBearing) <= 1) ? 0 : newBearing;
+    if (snappedBearing != bearingDeg) {
+      bearingDeg = snappedBearing;
       poseDirty = true;
     }
   }
