@@ -19,9 +19,12 @@ constexpr uint8_t kSpeedEncoderA = 13;
 constexpr uint8_t kSpeedEncoderB = 12;
 constexpr uint8_t kBearingEncoderA = 4;
 constexpr uint8_t kBearingEncoderB = 14;
+constexpr uint8_t kStopButtonInput = 33;
 constexpr uint8_t kCncSerialTx = 22;
 constexpr uint8_t kCncSerialRx = 23;
 constexpr uint8_t kVehicleInputs[kVehicleInputCount] = {16, 27, 17, 26, 25};
+constexpr uint16_t kStopDecelIntervalMs = 100;
+constexpr int8_t kStopDecelStepMmPerSec = 1;
 constexpr uint32_t kUsbSerialBaudRate = 115200;
 
 // Bed Size 265, 225
@@ -64,6 +67,7 @@ int16_t bearingDeg = 0;
 bool poseDirty = false;
 uint32_t lastPoseUpdateMs = 0;
 uint32_t lastGCodeSentMs = 0;
+uint32_t lastStopDecelMs = 0;
 
 #if GCODE_USB_DEBUG
 constexpr size_t kCncRxBufferSize = 96;
@@ -227,21 +231,25 @@ void processVehicleSelection() {
   }
 }
 
+bool isStopButtonPressed() { return digitalRead(kStopButtonInput) == LOW; }
+
 void processEncoders() {
-  const int8_t speedDelta = speedEncoder.readDelta();
-  if (speedDelta != 0) {
-    int8_t newSpeed = clampSpeed(static_cast<int32_t>(speedMmPerSec) + speedDelta);
-    // Snap to zero when moving towards zero and landing within the deadband.
-    // This allows speed to be set to exactly zero despite encoder noise near zero.
-    const bool movingTowardsZero = (abs(newSpeed) < abs(speedMmPerSec));
-    const bool withinDeadband =
-        (newSpeed <= kSpeedDeadbandMmPerSec && newSpeed >= -kSpeedDeadbandMmPerSec);
-    if (movingTowardsZero && withinDeadband) {
-      newSpeed = 0;
-    }
-    if (newSpeed != speedMmPerSec) {
-      speedMmPerSec = newSpeed;
-      poseDirty = true;
+  if (!isStopButtonPressed()) {
+    const int8_t speedDelta = speedEncoder.readDelta();
+    if (speedDelta != 0) {
+      int8_t newSpeed = clampSpeed(static_cast<int32_t>(speedMmPerSec) + speedDelta);
+      // Snap to zero when moving towards zero and landing within the deadband.
+      // This allows speed to be set to exactly zero despite encoder noise near zero.
+      const bool movingTowardsZero = (abs(newSpeed) < abs(speedMmPerSec));
+      const bool withinDeadband =
+          (newSpeed <= kSpeedDeadbandMmPerSec && newSpeed >= -kSpeedDeadbandMmPerSec);
+      if (movingTowardsZero && withinDeadband) {
+        newSpeed = 0;
+      }
+      if (newSpeed != speedMmPerSec) {
+        speedMmPerSec = newSpeed;
+        poseDirty = true;
+      }
     }
   }
 
@@ -257,6 +265,30 @@ void processEncoders() {
       poseDirty = true;
     }
   }
+}
+
+void processStopButton() {
+  if (!isStopButtonPressed() || speedMmPerSec == 0) {
+    return;
+  }
+
+  const uint32_t nowMs = millis();
+  if ((nowMs - lastStopDecelMs) < kStopDecelIntervalMs) {
+    return;
+  }
+
+  int16_t newSpeed = speedMmPerSec;
+  if (newSpeed > 0) {
+    newSpeed = max<int16_t>(0, newSpeed - kStopDecelStepMmPerSec);
+  } else {
+    newSpeed = min<int16_t>(0, newSpeed + kStopDecelStepMmPerSec);
+  }
+
+  if (newSpeed != speedMmPerSec) {
+    speedMmPerSec = static_cast<int8_t>(newSpeed);
+    poseDirty = true;
+  }
+  lastStopDecelMs = nowMs;
 }
 
 void processPoseOutput() {
@@ -296,6 +328,7 @@ void setup() {
 
   speedEncoder.begin();
   bearingEncoder.begin();
+  pinMode(kStopButtonInput, INPUT_PULLUP);
 
   for (uint8_t pin : kVehicleInputs) {
     pinMode(pin, INPUT_PULLUP);
@@ -305,11 +338,13 @@ void setup() {
   pendingVehicleSinceMs = millis();
   lastPoseUpdateMs = millis();
   lastGCodeSentMs = lastPoseUpdateMs;
+  lastStopDecelMs = lastPoseUpdateMs;
 }
 
 void loop() {
   processCncSerialInput();
   processVehicleSelection();
   processEncoders();
+  processStopButton();
   processPoseOutput();
 }
