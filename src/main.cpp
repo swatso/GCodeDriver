@@ -11,7 +11,7 @@ constexpr int8_t kSpeedMin = -50;
 constexpr int8_t kSpeedMax = 50;
 constexpr uint16_t kVehicleSettleMs = 3000;
 constexpr uint16_t kMaxGCodeRateMs = 1000;  // 1 Hz
-constexpr int8_t kSpeedDeadbandMmPerSec = 2;  // speeds within [-deadband, +deadband] are treated as stopped
+constexpr int8_t kSpeedDeadbandMmPerSec = 3;  // speeds within [-deadband, +deadband] are treated as stopped
 constexpr float kHeadingOnlyFeedrateDegPerSec = 30.0F;
 
 // GPIO mappings.
