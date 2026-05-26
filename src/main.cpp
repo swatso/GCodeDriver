@@ -22,7 +22,7 @@ constexpr uint8_t kSpeedEncoderB = 12;
 constexpr uint8_t kBearingEncoderA = 4;
 constexpr uint8_t kBearingEncoderB = 14;
 constexpr uint8_t kStopButtonInput = 32;
-constexpr uint8_t kForwardButtonInput = 33;
+constexpr uint8_t kForwardButtonInput = 21;
 constexpr uint8_t kBackwardButtonInput = 18;
 constexpr uint8_t kPrintButtonInput = 19;
 constexpr uint8_t kCncSerialTx = 22;
@@ -66,6 +66,8 @@ struct DebouncedButton {
   bool stablePressed = false;
   bool lastRawPressed = false;
   uint32_t lastChangeMs = 0;
+
+  explicit DebouncedButton(uint8_t buttonPin) : pin(buttonPin) {}
 
   void begin() {
     pinMode(pin, INPUT_PULLUP);
