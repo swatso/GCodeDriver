@@ -3,7 +3,7 @@
 #include "vehicle_config.h"
 
 #ifndef GCODE_USB_DEBUG
-#define GCODE_USB_DEBUG 1
+#define GCODE_USB_DEBUG 0
 #endif
 
 namespace {
@@ -19,7 +19,7 @@ constexpr uint8_t kSpeedEncoderA = 13;
 constexpr uint8_t kSpeedEncoderB = 12;
 constexpr uint8_t kBearingEncoderA = 4;
 constexpr uint8_t kBearingEncoderB = 14;
-constexpr uint8_t kStopButtonInput = 33;
+constexpr uint8_t kStopButtonInput = 32;
 constexpr uint8_t kCncSerialTx = 22;
 constexpr uint8_t kCncSerialRx = 23;
 constexpr uint8_t kVehicleInputs[kVehicleInputCount] = {16, 27, 17, 26, 25};
@@ -102,8 +102,8 @@ void streamLine(const char* line) {
   Serial2.println(line);
 #if GCODE_USB_DEBUG
   Serial.printf("Speed: %d mm/s, Bearing: %d deg -> ", speedMmPerSec, bearingDeg);
-  Serial.println(line);
 #endif
+Serial.println(line);
 }
 
 void streamLines(const char* const* lines, size_t count) {
@@ -113,10 +113,6 @@ void streamLines(const char* const* lines, size_t count) {
 }
 
 void streamCurrentPoseGCode() {
-//  if (currentVehicle == 0) {
-//    return;
-//  }
-
   const uint32_t nowMs = millis();
   const float dtSec = static_cast<float>(nowMs - lastPoseUpdateMs) / 1000.0F;
   Pose& pose = vehiclePoses[currentVehicle];
@@ -191,16 +187,12 @@ void applyVehicleSelection(uint8_t vehicle) {
   speedMmPerSec = 0;
   poseDirty = false;
 
-  //if (currentVehicle == 0) {
-  //  return;
- // }
-
-  streamLines(kVehicleDeselectGCode[currentVehicle - 1], 3);
+  streamLines(kVehicleDeselectGCode[currentVehicle], 3);
   bearingDeg = normalizeBearing(static_cast<int16_t>(vehiclePoses[currentVehicle].heading));
   lastPoseUpdateMs = millis();
   lastGCodeSentMs = lastPoseUpdateMs - kMaxGCodeRateMs;
   streamCurrentPoseGCode();
-  streamLines(kVehicleSelectGCode[currentVehicle - 1], 2);
+  streamLines(kVehicleSelectGCode[currentVehicle], 3);
 }
 
 uint8_t readVehicleSelectionRaw() {
@@ -315,9 +307,7 @@ void processPoseOutput() {
 }  // namespace
 
 void setup() {
-#if GCODE_USB_DEBUG
   Serial.begin(kUsbSerialBaudRate);
-#endif
   Serial2.begin(250000, SERIAL_8N1, kCncSerialRx, kCncSerialTx);
 
   for (uint8_t i = 0; i < kVehicleCount; ++i) {
