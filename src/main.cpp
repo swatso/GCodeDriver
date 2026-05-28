@@ -210,11 +210,13 @@ void recordStreamedLine(const char* line) {
   entry.state = captureRecordedState();
 }
 
-void streamLine(const char* line, bool shouldRecord = true) {
+void streamLine(const char* line, bool shouldRecord = true, bool includeUsbDebug = true) {
   Serial2.println(line);
   ++cncCommandsInFlight;
 #if GCODE_USB_DEBUG
-  Serial.printf("Speed: %d mm/s, Bearing: %d deg -> ", speedMmPerSec, bearingDeg);
+  if (includeUsbDebug) {
+    Serial.printf("Speed: %d mm/s, Bearing: %d deg -> ", speedMmPerSec, bearingDeg);
+  }
 #endif
   Serial.println(line);
 
@@ -438,7 +440,7 @@ void processStopButton() {
   lastStopDecelMs = nowMs;
 }
 
-void replayRecordedLine(size_t index) {
+void replayRecordedLine(size_t index, bool includeUsbDebug = true) {
   if (index >= recordedGCodeCount) {
     return;
   }
@@ -447,7 +449,7 @@ void replayRecordedLine(size_t index) {
   restoreRecordedState(recordedGCode[index].state);
   speedMmPerSec = 0;
   poseDirty = false;
-  streamLine(recordedGCode[index].line, false);
+  streamLine(recordedGCode[index].line, false, includeUsbDebug);
 }
 
 void processReplayButtons() {
@@ -490,7 +492,7 @@ void processPrintReplay() {
     return;
   }
 
-  replayRecordedLine(printReplayIndex++);
+  replayRecordedLine(printReplayIndex++, false);
   printReplayWaitingForOk = true;
 }
 
