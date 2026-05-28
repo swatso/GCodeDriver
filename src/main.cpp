@@ -129,6 +129,7 @@ uint32_t lastStopDecelMs = 0;
 constexpr size_t kCncRxBufferSize = 96;
 char cncRxBuffer[kCncRxBufferSize] = {};
 size_t cncRxLength = 0;
+uint16_t cncCommandsInFlight = 0;
 uint16_t cncOkResponsesPending = 0;
 
 RecordedGCodeLine recordedGCode[kRecordedGCodeCapacity] = {};
@@ -187,6 +188,7 @@ void restoreRecordedState(const RecordedState& state) {
 
 void clearRecordedGCode() {
   recordedGCodeCount = 0;
+  cncCommandsInFlight = 0;
   cncOkResponsesPending = 0;
   replayModeActive = false;
   replayIndex = 0;
@@ -210,6 +212,7 @@ void recordStreamedLine(const char* line) {
 
 void streamLine(const char* line, bool shouldRecord = true) {
   Serial2.println(line);
+  ++cncCommandsInFlight;
 #if GCODE_USB_DEBUG
   Serial.printf("Speed: %d mm/s, Bearing: %d deg -> ", speedMmPerSec, bearingDeg);
 #endif
@@ -280,6 +283,9 @@ void processCncSerialInput() {
     if (ch == '\r' || ch == '\n') {
       if (cncRxLength > 0) {
         if (isCncOkResponse(cncRxBuffer)) {
+          if (cncCommandsInFlight > 0) {
+            --cncCommandsInFlight;
+          }
           ++cncOkResponsesPending;
         }
 #if GCODE_USB_DEBUG
@@ -445,7 +451,8 @@ void replayRecordedLine(size_t index) {
 }
 
 void processReplayButtons() {
-  if (!replayModeActive || printReplayActive || speedMmPerSec != 0 || recordedGCodeCount == 0) {
+  if (!replayModeActive || printReplayActive || speedMmPerSec != 0 || recordedGCodeCount == 0 ||
+      cncCommandsInFlight != 0) {
     return;
   }
 
@@ -501,6 +508,11 @@ void processPoseOutput() {
 
   const uint32_t nowMs = millis();
   if ((nowMs - lastGCodeSentMs) < kMaxGCodeRateMs) {
+    return;
+  }
+
+  if (cncCommandsInFlight != 0) {
+    lastPoseUpdateMs = nowMs;
     return;
   }
 
