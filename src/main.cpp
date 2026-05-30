@@ -8,9 +8,13 @@
 #define GCODE_USB_DEBUG 1
 #endif
 
+#ifndef MARLIN_USB_DEBUG
+#define MARLIN_USB_DEBUG 0
+#endif
+
 namespace {
-constexpr int8_t kSpeedMin = -50;
-constexpr int8_t kSpeedMax = 50;
+constexpr int8_t kSpeedMin = -30;
+constexpr int8_t kSpeedMax = 30;
 constexpr uint16_t kVehicleSettleMs = 3000;
 constexpr uint16_t kMaxGCodeRateMs = 1000;  // 1 Hz
 constexpr int8_t kSpeedDeadbandMmPerSec = 3;  // speeds within [-deadband, +deadband] are treated as stopped
@@ -29,7 +33,7 @@ constexpr uint8_t kCncSerialTx = 22;
 constexpr uint8_t kCncSerialRx = 23;
 constexpr uint8_t kVehicleInputs[kVehicleInputCount] = {16, 27, 17, 26, 25};
 constexpr uint16_t kStopDecelIntervalMs = 100;
-constexpr int8_t kStopDecelStepMmPerSec = 5;
+constexpr int8_t kStopDecelStepMmPerSec = 30;
 constexpr uint32_t kUsbSerialBaudRate = 115200;
 constexpr uint16_t kButtonDebounceMs = 50;
 constexpr size_t kRecordedGCodeCapacity = 96;
@@ -144,10 +148,10 @@ float toRadians(float deg) { return deg * DEG_TO_RAD; }
 
 int16_t normalizeBearing(int16_t value) {
   while (value < 0) {
-    value += 360;
+    value =0;
   }
   while (value >= 360) {
-    value -= 360;
+    value = 360;
   }
   return value;
 }
@@ -290,7 +294,7 @@ void processCncSerialInput() {
           }
           ++cncOkResponsesPending;
         }
-#if GCODE_USB_DEBUG
+#if MARLIN_USB_DEBUG
         Serial.print("Marlin:");
         Serial.println(cncRxBuffer);
 #endif
