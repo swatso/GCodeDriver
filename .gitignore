@@ -1,2 +1,5 @@
 .pio/
 .vscode/
+/data/broker.txt
+/data/ssid.txt
+/data/pass.txt

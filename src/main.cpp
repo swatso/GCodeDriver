@@ -3,13 +3,17 @@
 #include <cstring>
 
 #include "vehicle_config.h"
+#include "FileSystem.h"
+#include "MQTTComms.h"
+#include "NodeServices.h"
+#include "WiFiManager.h"
 
 #ifndef GCODE_USB_DEBUG
 #define GCODE_USB_DEBUG 1
 #endif
 
 #ifndef MARLIN_USB_DEBUG
-#define MARLIN_USB_DEBUG 0
+#define MARLIN_USB_DEBUG 1
 #endif
 
 namespace {
@@ -21,19 +25,31 @@ constexpr int8_t kSpeedDeadbandMmPerSec = 3;  // speeds within [-deadband, +dead
 constexpr float kHeadingOnlyFeedrateDegPerSec = 50.0F;
 
 // GPIO mappings.
-constexpr uint8_t kSpeedEncoderA = 13;
-constexpr uint8_t kSpeedEncoderB = 12;
-constexpr uint8_t kBearingEncoderA = 4;
-constexpr uint8_t kBearingEncoderB = 14;
-constexpr uint8_t kStopButtonInput = 32;
-constexpr uint8_t kForwardButtonInput = 21;
-constexpr uint8_t kBackwardButtonInput = 18;
-constexpr uint8_t kPrintButtonInput = 19;
-constexpr uint8_t kCncSerialTx = 22;
-constexpr uint8_t kCncSerialRx = 23;
+constexpr uint8_t kSpeedEncoderA = 13;          // Bit 00
+constexpr uint8_t kSpeedEncoderB = 12;          // Bit 01
+constexpr uint8_t kBearingEncoderA = 4;         // Bit 02
+constexpr uint8_t kBearingEncoderB = 14;        // Bit 03
+// GPIO 16 Bit 04  - use for vehicle selection
+// GPIO 27 Bit 05  - use for vehicle selection
+// GPIO 17 Bit 06  - use for vehicle selection
+// GPIO 26 Bit 07  - use for vehicle selection
+// GPIO 25 Bit 08
+constexpr uint8_t kBackwardButtonInput = 18;    // Bit 09
+constexpr uint8_t kPrintButtonInput = 19;       // Bit 0A
+constexpr uint8_t kStopButtonInput = 32;        // Bit 0B
+constexpr uint8_t kForwardButtonInput = 21;     // Bit 0C
+constexpr uint8_t kGimbleLock = 22;              // Bit 0D
+constexpr uint8_t kOrthogonal = 23;             // Bit 0E
+// GPIO 33   Bit 0F
+
+
+
 constexpr uint8_t kVehicleInputs[kVehicleInputCount] = {16, 27, 17, 26, 25};
 constexpr uint16_t kStopDecelIntervalMs = 100;
 constexpr int8_t kStopDecelStepMmPerSec = 30;
+constexpr int8_t kSpeedEncoderTransitionsPerStep = 2;
+constexpr int8_t kBearingEncoderTransitionsPerDegree = kSpeedEncoderTransitionsPerStep;
+constexpr bool kBearingDirectionInverted = false;
 constexpr uint32_t kUsbSerialBaudRate = 115200;
 constexpr uint16_t kButtonDebounceMs = 50;
 constexpr size_t kRecordedGCodeCapacity = 96;
@@ -47,6 +63,14 @@ struct Encoder {
   uint8_t pinA;
   uint8_t pinB;
   uint8_t lastState;
+  int8_t stepsPerDetent;  // raw quadrature transitions required to output ±1
+  int8_t accumulator = 0;
+
+  void configure(uint8_t newPinA, uint8_t newPinB, int8_t newStepsPerDetent) {
+    pinA = newPinA;
+    pinB = newPinB;
+    stepsPerDetent = newStepsPerDetent;
+  }
 
   void begin() {
     pinMode(pinA, INPUT_PULLUP);
@@ -61,7 +85,17 @@ struct Encoder {
     static constexpr int8_t transitionTable[16] = {0,  -1, 1,  0, 1, 0,  0,  -1,
                                                     -1, 0,  0,  1, 0, 1,  -1, 0};
     lastState = newState;
-    return transitionTable[index];
+    accumulator += transitionTable[index];
+    if (accumulator >= stepsPerDetent) {
+      const int8_t clicks = accumulator / stepsPerDetent;
+      accumulator %= stepsPerDetent;
+      return -clicks;
+    } else if (accumulator <= -stepsPerDetent) {
+      const int8_t clicks = accumulator / stepsPerDetent;
+      accumulator %= stepsPerDetent;
+      return -clicks;
+    }
+    return 0;
   }
 };
 
@@ -112,8 +146,7 @@ struct RecordedGCodeLine {
   RecordedState state;
 };
 
-Encoder speedEncoder{kSpeedEncoderA, kSpeedEncoderB, 0};
-Encoder bearingEncoder{kBearingEncoderA, kBearingEncoderB, 0};
+Encoder speedEncoder;
 DebouncedButton forwardButton{kForwardButtonInput};
 DebouncedButton backwardButton{kBackwardButtonInput};
 DebouncedButton printButton{kPrintButtonInput};
@@ -130,11 +163,11 @@ bool poseDirty = false;
 uint32_t lastPoseUpdateMs = 0;
 uint32_t lastGCodeSentMs = 0;
 uint32_t lastStopDecelMs = 0;
+uint8_t lastBearingAState = HIGH;
+int8_t bearingEdgeDirectionSum = 0;
 constexpr size_t kCncRxBufferSize = 96;
 char cncRxBuffer[kCncRxBufferSize] = {};
 size_t cncRxLength = 0;
-uint16_t cncCommandsInFlight = 0;
-uint16_t cncOkResponsesPending = 0;
 
 RecordedGCodeLine recordedGCode[kRecordedGCodeCapacity] = {};
 size_t recordedGCodeCount = 0;
@@ -146,13 +179,30 @@ bool printReplayWaitingForOk = false;
 
 float toRadians(float deg) { return deg * DEG_TO_RAD; }
 
-int16_t normalizeBearing(int16_t value) {
-  while (value < 0) {
-    value =0;
+int16_t clampBearing(int16_t value) {
+  // Clamps to 0-360 and warns that the gimble lock is in action by lighting the LED
+  // The gimble lock prevents the data cable to the puck from being twisted too much when the bearing is near the wraparound point. 
+  // The LED will light to warn the user that the gimble is at the limit of rotation
+  if(value < 0)
+  {
+    value = 0;
+    digitalWrite(kGimbleLock, LOW);
   }
-  while (value >= 360) {
+  else if(value > 360)
+  {
     value = 360;
+    digitalWrite(kGimbleLock, LOW);
   }
+  else
+  {
+    digitalWrite(kGimbleLock, HIGH);
+  }
+  // Drive the orthogonal lock LED when near the cardinal directions to help the user align to them, which is a common use case 
+  digitalWrite(kOrthogonal, HIGH);
+  if((value > 85) && (value < 95))digitalWrite(kOrthogonal, LOW);
+  else if((value > 175) && (value < 185))digitalWrite(kOrthogonal, LOW);
+  else if((value > 265) && (value < 275))digitalWrite(kOrthogonal, LOW);
+  else if((value > 355) || (value < 5))digitalWrite(kOrthogonal, LOW);
   return value;
 }
 
@@ -192,8 +242,6 @@ void restoreRecordedState(const RecordedState& state) {
 
 void clearRecordedGCode() {
   recordedGCodeCount = 0;
-  cncCommandsInFlight = 0;
-  cncOkResponsesPending = 0;
   replayModeActive = false;
   replayIndex = 0;
   printReplayActive = false;
@@ -215,8 +263,8 @@ void recordStreamedLine(const char* line) {
 }
 
 void streamLine(const char* line, bool shouldRecord = true, bool includeUsbDebug = true) {
-  Serial2.println(line);
-  ++cncCommandsInFlight;
+//  Serial2.println(line);
+  publishMQTT(GCodeTopic, (char *)line);
 #if GCODE_USB_DEBUG
   if (includeUsbDebug) {
     Serial.printf("Speed: %d mm/s, Bearing: %d deg -> ", speedMmPerSec, bearingDeg);
@@ -275,40 +323,8 @@ void streamCurrentPoseGCode() {
   snprintf(gcodeLine, sizeof(gcodeLine), "G1 X%.3f Y%.3f Z%.3f F%.1f", pose.x, pose.y,
            pose.heading, feedrateMmPerMin);
   streamLine(gcodeLine);
-
   lastPoseUpdateMs = nowMs;
   lastGCodeSentMs = nowMs;
-}
-
-bool isCncOkResponse(const char* line) { return strncmp(line, "ok", 2) == 0; }
-
-void processCncSerialInput() {
-  while (Serial2.available() > 0) {
-    const char ch = static_cast<char>(Serial2.read());
-
-    if (ch == '\r' || ch == '\n') {
-      if (cncRxLength > 0) {
-        if (isCncOkResponse(cncRxBuffer)) {
-          if (cncCommandsInFlight > 0) {
-            --cncCommandsInFlight;
-          }
-          ++cncOkResponsesPending;
-        }
-#if MARLIN_USB_DEBUG
-        Serial.print("Marlin:");
-        Serial.println(cncRxBuffer);
-#endif
-        cncRxLength = 0;
-        cncRxBuffer[0] = '\0';
-      }
-      continue;
-    }
-
-    if (cncRxLength < (kCncRxBufferSize - 1)) {
-      cncRxBuffer[cncRxLength++] = ch;
-      cncRxBuffer[cncRxLength] = '\0';
-    }
-  }
 }
 
 void applyVehicleSelection(uint8_t vehicle) {
@@ -317,7 +333,7 @@ void applyVehicleSelection(uint8_t vehicle) {
   poseDirty = false;
 
   streamLines(kVehicleDeselectGCode[currentVehicle], 3);
-  bearingDeg = normalizeBearing(static_cast<int16_t>(vehiclePoses[currentVehicle].heading));
+  bearingDeg = clampBearing(static_cast<int16_t>(vehiclePoses[currentVehicle].heading));
   lastPoseUpdateMs = millis();
   lastGCodeSentMs = lastPoseUpdateMs - kMaxGCodeRateMs;
   streamCurrentPoseGCode();
@@ -394,12 +410,29 @@ void processEncoders() {
     }
   }
 
-  const int8_t bearingDelta = bearingEncoder.readDelta();
+  int8_t bearingDelta = 0;
+  const uint8_t bearingAState = static_cast<uint8_t>(digitalRead(kBearingEncoderA));
+  if (bearingAState != lastBearingAState) {
+    const uint8_t bearingBState = static_cast<uint8_t>(digitalRead(kBearingEncoderB));
+    // On each A edge, B phase gives direction; accumulate until one logical step is reached.
+    int8_t edgeDirection = (bearingAState != bearingBState) ? 1 : -1;
+    if (kBearingDirectionInverted) {
+      edgeDirection = -edgeDirection;
+    }
+
+    bearingEdgeDirectionSum += edgeDirection;
+    if (abs(bearingEdgeDirectionSum) >= kBearingEncoderTransitionsPerDegree) {
+      bearingDelta = (bearingEdgeDirectionSum > 0) ? 1 : -1;
+      bearingEdgeDirectionSum = 0;
+    }
+    lastBearingAState = bearingAState;
+  }
+
   if (bearingDelta != 0) {
     if (replayModeActive) {
       resumeNormalStreamingFromReplay();
     }
-    const int16_t newBearing = normalizeBearing(static_cast<int16_t>(bearingDeg) + bearingDelta);
+    const int16_t newBearing = clampBearing(static_cast<int16_t>(bearingDeg) + bearingDelta);
     // Snap bearing to zero when a step towards zero would land within one degree.
     // This allows heading to be set to exactly zero (north) despite encoder noise.
     const int16_t snappedBearing =
@@ -457,8 +490,7 @@ void replayRecordedLine(size_t index, bool includeUsbDebug = true) {
 }
 
 void processReplayButtons() {
-  if (!replayModeActive || printReplayActive || speedMmPerSec != 0 || recordedGCodeCount == 0 ||
-      cncCommandsInFlight != 0) {
+  if (!replayModeActive || printReplayActive || speedMmPerSec != 0 || recordedGCodeCount == 0 ) {
     return;
   }
 
@@ -474,21 +506,12 @@ void processReplayButtons() {
     printReplayActive = true;
     printReplayIndex = 0;
     printReplayWaitingForOk = false;
-    cncOkResponsesPending = 0;
   }
 }
 
 void processPrintReplay() {
   if (!printReplayActive || recordedGCodeCount == 0) {
     return;
-  }
-
-  if (printReplayWaitingForOk) {
-    if (cncOkResponsesPending == 0) {
-      return;
-    }
-    --cncOkResponsesPending;
-    printReplayWaitingForOk = false;
   }
 
   if (printReplayIndex >= recordedGCodeCount) {
@@ -516,12 +539,6 @@ void processPoseOutput() {
   if ((nowMs - lastGCodeSentMs) < kMaxGCodeRateMs) {
     return;
   }
-
-  if (cncCommandsInFlight != 0) {
-    lastPoseUpdateMs = nowMs;
-    return;
-  }
-
   streamCurrentPoseGCode();
   poseDirty = false;
 }
@@ -530,17 +547,21 @@ void processPoseOutput() {
 
 void setup() {
   Serial.begin(kUsbSerialBaudRate);
-  Serial2.begin(250000, SERIAL_8N1, kCncSerialRx, kCncSerialTx);
-
   for (uint8_t i = 0; i < kVehicleCount; ++i) {
     vehiclePoses[i] = kInitialVehiclePoses[i];
   }
 
   clearRecordedGCode();
   streamLines(kInitGCode, sizeof(kInitGCode) / sizeof(kInitGCode[0]));
-
+  pinMode(kGimbleLock, OUTPUT);
+  digitalWrite(kGimbleLock, HIGH);
+  pinMode(kOrthogonal, OUTPUT);
+  digitalWrite(kOrthogonal, HIGH);
+  speedEncoder.configure(kSpeedEncoderA, kSpeedEncoderB, kSpeedEncoderTransitionsPerStep);
   speedEncoder.begin();
-  bearingEncoder.begin();
+  pinMode(kBearingEncoderA, INPUT_PULLUP);
+  pinMode(kBearingEncoderB, INPUT_PULLUP);
+  lastBearingAState = static_cast<uint8_t>(digitalRead(kBearingEncoderA));
   pinMode(kStopButtonInput, INPUT_PULLUP);
   forwardButton.begin();
   backwardButton.begin();
@@ -550,6 +571,11 @@ void setup() {
     pinMode(pin, INPUT_PULLUP);
   }
 
+  setupSPIFFS();
+  node.loadConfig();
+  setupWiFi();
+  setupMQTTComms();
+
   pendingVehicle = readVehicleSelectionRaw();
   pendingVehicleSinceMs = millis();
   lastPoseUpdateMs = millis();
@@ -558,11 +584,12 @@ void setup() {
 }
 
 void loop() {
-  processCncSerialInput();
+  //processCncSerialInput();
   processVehicleSelection();
   processEncoders();
   processStopButton();
   processReplayButtons();
   processPrintReplay();
   processPoseOutput();
+
 }

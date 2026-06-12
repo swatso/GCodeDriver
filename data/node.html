@@ -1,0 +1,118 @@
+  <!DOCTYPE html> 
+  <html>
+  	<head>
+	  	<meta name="viewport" content="width=device-width, initial-scale=1">
+  		<title>Node Status</title>
+  		<link rel="shortcut icon" href="/favicon">
+  		<style>
+			left-align {text-align: left;}
+  		    meta {content:"width=device-width, initial-scale=1"}
+  			html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: left;}
+  			body{margin-top: 50px;} h1 {color: #444444;margin: auto 30px;text-align: center;} h3 {color: #444444;margin-bottom: 20px;}
+  			p {font-size: 14px;color: #888;margin-bottom: 10px;}
+			table {border: 1px solid black;border-collapse: collapse;}
+			th, td {text-align: left;padding: 8px;}
+			tr:nth-child(odd) {background-color: #D6EEEE;}
+			td {border-bottom: 1px solid #444444;}
+  		</style>
+  		<script>
+			async function init()
+			{
+console.log("init");
+				getNodeStatus();
+console.log("end of init");
+			};
+
+			async function getNodeStatus() 
+			{
+console.log("getNodeStatus");
+
+			  var response = await fetch("//"+window.location.host+"/api/nodeid/value");
+			  var data = await response.json();
+			  var resp = JSON.parse(JSON.stringify(data));
+        	  var ele = document.getElementById('NodeID');	
+	  		  ele.innerText = resp.value;
+
+  			  response = await fetch("//"+window.location.host+"/api/brokerip/value");
+			  data = await response.json();
+			  resp = JSON.parse(JSON.stringify(data));
+       		  ele = document.getElementById('BrokerIP');
+	  		  ele.innerText = resp.value;
+
+  			  response = await fetch("//"+window.location.host+"/api/hostname/value");
+			  data = await response.json();
+			  resp = JSON.parse(JSON.stringify(data));
+			  document.getElementById("header").innerText = "Status of: " + resp.value;
+			  
+console.log(resp.value);			 
+
+
+			  var response = await fetch("//"+window.location.host+"/api/node/status");
+			  var data = await response.json();
+			  var resp = JSON.parse(JSON.stringify(data));
+console.log(resp);
+console.log(resp.WIFIuptime);
+			  var WIFIuptime = document.getElementById('WIFIuptime');	
+	  		  WIFIuptime.innerText = resp.WIFIuptime;
+
+              var ipAddress = document.getElementById('IPAddress');	
+	  		  ipAddress.innerText = resp.ipAddress;
+
+              var rssi = document.getElementById('RSSI');	
+	  		  rssi.innerText = resp.rssi;
+
+			  var mqttState = document.getElementById('MQTTState');
+			  mqttState.innerText = resp.mqttState;
+
+			  var mqttUptime = document.getElementById('MQTTUptime');	
+	  		  mqttUptime.innerText = resp.mqttUptime;
+
+
+			};
+
+			async function launchNode()
+			{
+  			  var url = "//"+window.location.host+"/page/nodeconfig";
+			  open(url);
+			};
+
+
+		</script>
+  	</head>
+  	<body onload = "init()">
+		
+  		<h1><p font-size: 30 px;text-align: "centre";color: #444444; id="header";></p>Node Status</h1>
+  		</br>
+  		    NodeID (hex)</br>
+			<span id="NodeID">-Loading</span>
+		</br></br>
+		    Node IP Address</br>
+		    <span id="IPAddress">-Loading...</span>
+		</br></br>
+			WIFI Uptime (Min)</br>
+		    <span id="WIFIuptime">-Loading...</span>
+		</br></br>
+			RSSI</br>
+		    <span id="RSSI">-Loading...</span>
+		</br></br>
+		    MQTT Broker IP Address</br>
+		    <span id="BrokerIP">-Loading...</span>
+		</br></br>
+		  	MQTT State</br>
+		    <span id="MQTTState">-Loading...</span>
+		</br></br>
+			MQTT Uptime (Min)</br>
+		    <span id="MQTTUptime">-Loading...</span>
+		</br></br>
+			<button type="button" style="height:25px;width:80px;font-size:10px" 
+			onclick="launchNode()">Configure</button></th>
+
+	</br></br>
+  	</body>
+  </html>
+  
+  
+  
+  
+  
+  

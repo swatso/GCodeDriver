@@ -1,0 +1,120 @@
+  <!DOCTYPE html> 
+  <html>
+  	<head>
+	  	<meta name="viewport" content="width=device-width, initial-scale=1">
+  		<title>NodeConfig</title>
+  		<link rel="shortcut icon" href="/favicon">
+  		<style>
+			left-align {text-align: left;}
+  		    meta {content:"width=device-width, initial-scale=1"}
+  			html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: left;}
+  			body{margin-top: 50px;} h1 {color: #444444;margin: auto 30px;text-align: center;} h3 {color: #444444;margin-bottom: 20px;}
+  			p {font-size: 14px;color: #888;margin-bottom: 10px;}
+			table {border: 1px solid black;border-collapse: collapse;}
+			th, td {text-align: left;padding: 8px;}
+			tr:nth-child(odd) {background-color: #D6EEEE;}
+			td {border-bottom: 1px solid #444444;}
+  		</style>
+  		<script>
+			async function init()
+			{
+console.log("init");
+				getNodeConfig();
+console.log("end of init");
+			}
+
+			async function postit(url, content)
+  			{
+				console.log("postit " + url);
+  			   const response = await fetch(url, 
+			   {
+
+    			      method: "POST",
+    			         //body: JSON.stringify(content),
+    			         body: content,
+    			      headers: 
+    			      	 {"Content-type": "application/json; charset=UTF-8"}
+  			    });
+			}
+	  		
+
+
+			async function postRestart() 
+			{
+  			   var url = "//"+window.location.host+"/api/node/restart";
+              		   var out = '{"value":' +  ', 1}';
+console.log(out);
+ 			   postit(url,out);
+			};
+
+			async function postNodeConfig() 
+			{
+            	var ele = document.getElementById('NodeID');
+				var nodeID = ele.value
+				nodeID = nodeID.toUpperCase();
+  			   	var url = "//"+window.location.host+"/api/nodeid/value";
+              	var out = '{"value":"' + nodeID + '"}';
+console.log(out);
+ 			   	postit(url,out);
+
+              		   ele = document.getElementById('BrokerIP');
+  			   	url = "//"+window.location.host+"/api/brokerip/value";
+              		   out = '{"value":"' + ele.value + '"}';
+console.log(out);
+ 			   postit(url,out);
+    		};
+
+			async function getNodeConfig() 
+			{
+console.log("getNodeConfig");
+  			  var response = await fetch("//"+window.location.host+"/api/nodeid/value");
+			  var data = await response.json();
+			  var resp = JSON.parse(JSON.stringify(data));
+              		  var ele = document.getElementById('NodeID');	
+	  		  ele.value = resp.value;
+
+  			  response = await fetch("//"+window.location.host+"/api/brokerip/value");
+			  data = await response.json();
+			  resp = JSON.parse(JSON.stringify(data));
+              		  ele = document.getElementById('BrokerIP');
+	  		  ele.value = resp.value;
+
+  			  response = await fetch("//"+window.location.host+"/api/hostname/value");
+			  data = await response.json();
+			  resp = JSON.parse(JSON.stringify(data));
+			  document.getElementById("header").innerText = "Configuration for: " + resp.value;
+			};
+
+
+
+		</script>
+  	</head>
+  	<body onload = "init()">
+		
+  		<h1><p font-size: 30 px;text-align: "centre";color: #444444; id="header";></p>Node Configuration</h1>
+  		</br>
+  		    MQTT NodeID (00h to FFh)</br>
+ 		    <input type="text" id="NodeID" name="NodeID" value="-Loading..."></br>
+		</br></br>
+		    MQTT Broker IP</br>
+		    <input type="text" id="BrokerIP" name="BrokerIP" value="-Loading...">
+		</br></br>
+ 	    <button type="button" style="height:30px;width:200px;font-size:20px" onclick="postNodeConfig()">Submit</button>
+ 	    <button type="button" style="height:30px;width:200px;font-size:20px" onclick="postRestart()">Restart</button><br><br>
+		</br></br>
+
+
+	</br>
+	<table width="100%";outline: 5px solid #1C6EA4;outline-offset: 0px;>
+		<tr>
+			<td style="width:25%"><a href='/page/node'>node</a></td>
+		</tr>
+	</table>
+  	</body>
+  </html>
+  
+  
+  
+  
+  
+  
