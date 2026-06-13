@@ -6,6 +6,15 @@
 
 #include <Arduino.h>
 
+struct ReceivedPose {
+  float x;
+  float y;
+  float bearing;  // absolute heading in degrees, sourced from Z axis of received G1
+  bool valid;
+};
+
+extern ReceivedPose receivedPose;
+
 void setupMQTTComms();
 void initTopics(char* currentNodeID);
 boolean connectMQTTClient();

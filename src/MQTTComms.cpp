@@ -36,6 +36,9 @@ long MQTTConnectionTime;
 const char* GCodeDriverReporterTopic = "track/reporter/2600";
 char GCodeTopic[30];
 
+const char* const kPoseReporterTopic = "track/reporter/2800";
+ReceivedPose receivedPose = {};
+
 WiFiClient espClient;
 PubSubClient client(espClient);
 TaskHandle_t MQTTSensorService;
@@ -47,6 +50,7 @@ void setupMQTTComms()
   initTopics(node.getNodeIDstring());
   client.setBufferSize(512);
   client.setServer(node.brokerIP, 1883);
+  client.setCallback(MQTTcallback);
 //  xTaskCreatePinnedToCore(messageReceiverTask, "Message Task", 2048, NULL, 1, &MQTTMessageService, 1);
   connectMQTTClient();
   runMQTT.attach_ms(500, serviceConnection);
@@ -68,6 +72,7 @@ boolean connectMQTTClient()
     {
       Serial.print("Connected to MQTT Broker at: ");
       Serial.println(node.brokerIP);
+      client.subscribe(kPoseReporterTopic);
       MQTTConnectionTime = millis();
       return(true);     // Connected
     }
@@ -119,6 +124,30 @@ void messageReceiverTask(void *pvParameters)
   }
 }
 */
+
+void MQTTcallback(char* topic, byte* payload, unsigned int length)
+{
+  if (strcmp(topic, kPoseReporterTopic) != 0) {
+    return;
+  }
+
+  // Null-terminate the payload for sscanf
+  char buf[64];
+  if (length >= sizeof(buf)) {
+    return;
+  }
+  memcpy(buf, payload, length);
+  buf[length] = '\0';
+
+  float x, y, bearing, f;
+  if (sscanf(buf, "G1 X%f Y%f Z%f F%f", &x, &y, &bearing, &f) == 4) {
+    receivedPose.x = x;
+    receivedPose.y = y;
+    receivedPose.bearing = bearing;
+    receivedPose.valid = true;
+    Serial.printf("[MQTT] Received pose: X=%.3f, Y=%.3f, Bearing=%.3f, F=%.3f\n", x, y, bearing, f);
+  }
+}
 
 boolean checkMQTTState()
 {

@@ -1,7 +1,5 @@
 #include <Arduino.h>
 
-#include <cstring>
-
 #include "vehicle_config.h"
 #include "FileSystem.h"
 #include "MQTTComms.h"
@@ -19,45 +17,35 @@
 namespace {
 constexpr int8_t kSpeedMin = -30;
 constexpr int8_t kSpeedMax = 30;
-constexpr uint16_t kVehicleSettleMs = 3000;
 constexpr uint16_t kMaxGCodeRateMs = 1000;  // 1 Hz
 constexpr int8_t kSpeedDeadbandMmPerSec = 3;  // speeds within [-deadband, +deadband] are treated as stopped
 constexpr float kHeadingOnlyFeedrateDegPerSec = 50.0F;
+constexpr float kNudgeStepMm = 1.0F;
+constexpr float kPoseXMin = 0.0F;
+constexpr float kPoseXMax = 265.0F;
+constexpr float kPoseYMin = 0.0F;
+constexpr float kPoseYMax = 225.0F;
 
 // GPIO mappings.
 constexpr uint8_t kSpeedEncoderA = 13;          // Bit 00
 constexpr uint8_t kSpeedEncoderB = 12;          // Bit 01
 constexpr uint8_t kBearingEncoderA = 4;         // Bit 02
 constexpr uint8_t kBearingEncoderB = 14;        // Bit 03
-// GPIO 16 Bit 04  - use for vehicle selection
-// GPIO 27 Bit 05  - use for vehicle selection
-// GPIO 17 Bit 06  - use for vehicle selection
-// GPIO 26 Bit 07  - use for vehicle selection
-// GPIO 25 Bit 08
-constexpr uint8_t kBackwardButtonInput = 18;    // Bit 09
-constexpr uint8_t kPrintButtonInput = 19;       // Bit 0A
+
+
+constexpr uint8_t kNudge = 25;                  // Bit 08
 constexpr uint8_t kStopButtonInput = 32;        // Bit 0B
-constexpr uint8_t kForwardButtonInput = 21;     // Bit 0C
+
 constexpr uint8_t kGimbleLock = 22;              // Bit 0D
 constexpr uint8_t kOrthogonal = 23;             // Bit 0E
+
 // GPIO 33   Bit 0F
-
-
-
-constexpr uint8_t kVehicleInputs[kVehicleInputCount] = {16, 27, 17, 26, 25};
 constexpr uint16_t kStopDecelIntervalMs = 100;
 constexpr int8_t kStopDecelStepMmPerSec = 30;
 constexpr int8_t kSpeedEncoderTransitionsPerStep = 2;
 constexpr int8_t kBearingEncoderTransitionsPerDegree = kSpeedEncoderTransitionsPerStep;
 constexpr bool kBearingDirectionInverted = false;
 constexpr uint32_t kUsbSerialBaudRate = 115200;
-constexpr uint16_t kButtonDebounceMs = 50;
-constexpr size_t kRecordedGCodeCapacity = 96;
-constexpr size_t kRecordedGCodeLineLength = 80;
-
-// Bed Size 265, 225
-constexpr uint16_t kBedSizeX = 265;
-constexpr uint16_t kBedSizeY = 225;
 
 struct Encoder {
   uint8_t pinA;
@@ -99,111 +87,66 @@ struct Encoder {
   }
 };
 
-struct DebouncedButton {
-  uint8_t pin;
-  bool stablePressed = false;
-  bool lastRawPressed = false;
-  uint32_t lastChangeMs = 0;
-
-  explicit DebouncedButton(uint8_t buttonPin) : pin(buttonPin) {}
-
-  void begin() {
-    pinMode(pin, INPUT_PULLUP);
-    const bool rawPressed = isPressedRaw();
-    stablePressed = rawPressed;
-    lastRawPressed = rawPressed;
-    lastChangeMs = millis();
-  }
-
-  bool isPressedRaw() const { return digitalRead(pin) == LOW; }
-
-  bool wasPressed() {
-    const uint32_t nowMs = millis();
-    const bool rawPressed = isPressedRaw();
-
-    if (rawPressed != lastRawPressed) {
-      lastRawPressed = rawPressed;
-      lastChangeMs = nowMs;
-    }
-
-    if ((nowMs - lastChangeMs) < kButtonDebounceMs || rawPressed == stablePressed) {
-      return false;
-    }
-
-    stablePressed = rawPressed;
-    return stablePressed;
-  }
-};
-
-struct RecordedState {
-  Pose vehiclePoses[kVehicleCount];
-  uint8_t currentVehicle;
-  int16_t bearingDeg;
-};
-
-struct RecordedGCodeLine {
-  char line[kRecordedGCodeLineLength];
-  RecordedState state;
-};
-
 Encoder speedEncoder;
-DebouncedButton forwardButton{kForwardButtonInput};
-DebouncedButton backwardButton{kBackwardButtonInput};
-DebouncedButton printButton{kPrintButtonInput};
-
-Pose vehiclePoses[kVehicleCount];
-uint8_t currentVehicle = 0;
-uint8_t pendingVehicle = 0;
-uint32_t pendingVehicleSinceMs = 0;
 
 int8_t speedMmPerSec = 0;
 int16_t bearingDeg = 0;
 
 bool poseDirty = false;
-uint32_t lastPoseUpdateMs = 0;
 uint32_t lastGCodeSentMs = 0;
 uint32_t lastStopDecelMs = 0;
 uint8_t lastBearingAState = HIGH;
 int8_t bearingEdgeDirectionSum = 0;
-constexpr size_t kCncRxBufferSize = 96;
-char cncRxBuffer[kCncRxBufferSize] = {};
-size_t cncRxLength = 0;
-
-RecordedGCodeLine recordedGCode[kRecordedGCodeCapacity] = {};
-size_t recordedGCodeCount = 0;
-bool replayModeActive = false;
-size_t replayIndex = 0;
-bool printReplayActive = false;
-size_t printReplayIndex = 0;
-bool printReplayWaitingForOk = false;
+int16_t pendingBearingDeltaDeg = 0;
+float pendingNudgeDeltaX = 0.0F;
+float pendingNudgeDeltaY = 0.0F;
 
 float toRadians(float deg) { return deg * DEG_TO_RAD; }
 
-int16_t clampBearing(int16_t value) {
-  // Clamps to 0-360 and warns that the gimble lock is in action by lighting the LED
-  // The gimble lock prevents the data cable to the puck from being twisted too much when the bearing is near the wraparound point. 
-  // The LED will light to warn the user that the gimble is at the limit of rotation
-  if(value < 0)
-  {
-    value = 0;
-    digitalWrite(kGimbleLock, LOW);
+bool isNudgeActive() { return digitalRead(kNudge) == LOW; }
+
+float clampFloat(float value, float minimum, float maximum) {
+  if (value < minimum) {
+    return minimum;
   }
-  else if(value > 360)
-  {
-    value = 360;
-    digitalWrite(kGimbleLock, LOW);
+  if (value > maximum) {
+    return maximum;
   }
-  else
-  {
-    digitalWrite(kGimbleLock, HIGH);
-  }
-  // Drive the orthogonal lock LED when near the cardinal directions to help the user align to them, which is a common use case 
-  digitalWrite(kOrthogonal, HIGH);
-  if((value > 85) && (value < 95))digitalWrite(kOrthogonal, LOW);
-  else if((value > 175) && (value < 185))digitalWrite(kOrthogonal, LOW);
-  else if((value > 265) && (value < 275))digitalWrite(kOrthogonal, LOW);
-  else if((value > 355) || (value < 5))digitalWrite(kOrthogonal, LOW);
   return value;
+}
+
+int16_t clampBearing(int16_t value) {
+  if (value < 0) {
+    return 0;
+  }
+  if (value > 360) {
+    return 360;
+  }
+  return value;
+}
+
+bool isWithinFiveDegrees(float bearingDegValue, int16_t targetDeg) {
+  return fabsf(bearingDegValue - static_cast<float>(targetDeg)) <= 5.0F;
+}
+
+void processBearingLeds() {
+  if (!receivedPose.valid) {
+    digitalWrite(kGimbleLock, HIGH);
+    digitalWrite(kOrthogonal, HIGH);
+    return;
+  }
+
+  const float bearing = receivedPose.bearing;
+  const bool gimbleLockOn = (bearing == 0.0F || bearing == 360.0F);
+  const bool orthogonalOn = isWithinFiveDegrees(bearing, 0) ||
+                            isWithinFiveDegrees(bearing, 90) ||
+                            isWithinFiveDegrees(bearing, 180) ||
+                            isWithinFiveDegrees(bearing, 270) ||
+                            isWithinFiveDegrees(bearing, 360);
+
+  // Active-low outputs: LOW turns LED on.
+  digitalWrite(kGimbleLock, gimbleLockOn ? LOW : HIGH);
+  digitalWrite(kOrthogonal, orthogonalOn ? LOW : HIGH);
 }
 
 int8_t clampSpeed(int32_t value) {
@@ -217,53 +160,7 @@ int8_t clampSpeed(int32_t value) {
   return static_cast<int8_t>(value);
 }
 
-RecordedState captureRecordedState() {
-  RecordedState state{};
-  for (uint8_t i = 0; i < kVehicleCount; ++i) {
-    state.vehiclePoses[i] = vehiclePoses[i];
-  }
-  state.currentVehicle = currentVehicle;
-  state.bearingDeg = bearingDeg;
-  return state;
-}
-
-void restoreRecordedState(const RecordedState& state) {
-  for (uint8_t i = 0; i < kVehicleCount; ++i) {
-    vehiclePoses[i] = state.vehiclePoses[i];
-  }
-  currentVehicle = state.currentVehicle;
-  bearingDeg = state.bearingDeg;
-  pendingVehicle = currentVehicle;
-  pendingVehicleSinceMs = millis();
-  lastPoseUpdateMs = pendingVehicleSinceMs;
-  lastGCodeSentMs = pendingVehicleSinceMs;
-  lastStopDecelMs = pendingVehicleSinceMs;
-}
-
-void clearRecordedGCode() {
-  recordedGCodeCount = 0;
-  replayModeActive = false;
-  replayIndex = 0;
-  printReplayActive = false;
-  printReplayIndex = 0;
-  printReplayWaitingForOk = false;
-}
-
-void recordStreamedLine(const char* line) {
-  if (recordedGCodeCount == kRecordedGCodeCapacity) {
-    for (size_t i = 1; i < recordedGCodeCount; ++i) {
-      recordedGCode[i - 1] = recordedGCode[i];
-    }
-    --recordedGCodeCount;
-  }
-
-  RecordedGCodeLine& entry = recordedGCode[recordedGCodeCount++];
-  snprintf(entry.line, sizeof(entry.line), "%s", line);
-  entry.state = captureRecordedState();
-}
-
-void streamLine(const char* line, bool shouldRecord = true, bool includeUsbDebug = true) {
-//  Serial2.println(line);
+void streamLine(const char* line, bool includeUsbDebug = true) {
   publishMQTT(GCodeTopic, (char *)line);
 #if GCODE_USB_DEBUG
   if (includeUsbDebug) {
@@ -271,142 +168,79 @@ void streamLine(const char* line, bool shouldRecord = true, bool includeUsbDebug
   }
 #endif
   Serial.println(line);
-
-  if (shouldRecord) {
-    recordStreamedLine(line);
-  }
-}
-
-void streamLines(const char* const* lines, size_t count, bool shouldRecord = true) {
-  for (size_t i = 0; i < count; ++i) {
-    streamLine(lines[i], shouldRecord);
-  }
 }
 
 void streamCurrentPoseGCode() {
   const uint32_t nowMs = millis();
-  const float dtSec = static_cast<float>(nowMs - lastPoseUpdateMs) / 1000.0F;
-  Pose& pose = vehiclePoses[currentVehicle];
+  const bool nudgeActive = isNudgeActive();
+  const float dtSec = static_cast<float>(nowMs - lastGCodeSentMs) / 1000.0F;
 
   // Treat speed as zero when within the deadband, consistent with processPoseOutput().
-  // This prevents tiny positional drift and ensures the heading-only feedrate is applied
-  // correctly when the speed encoder oscillates near zero.
   const bool effectivelyStationary =
       (speedMmPerSec <= kSpeedDeadbandMmPerSec && speedMmPerSec >= -kSpeedDeadbandMmPerSec);
   const float effectiveSpeedMmPerSec = effectivelyStationary ? 0.0F : static_cast<float>(speedMmPerSec);
 
-  const float distanceMm = effectiveSpeedMmPerSec * dtSec;
-  const float headingRad = toRadians(static_cast<float>(bearingDeg));
-  pose.x -= distanceMm * pose.forward * sinf(headingRad);
-  if(pose.x < 0) {
-    pose.x = 0;
-  } else if(pose.x > kBedSizeX) {
-    pose.x = kBedSizeX;
-  }
-  pose.y += distanceMm * pose.forward * cosf(headingRad);
-  if(pose.y < 0) {
-    pose.y = 0;
-  } else if(pose.y > kBedSizeY) {
-    pose.y = kBedSizeY;
-  }
-  const float previousHeading = pose.heading;
-  pose.heading = static_cast<float>(bearingDeg);
+  float deltaX = 0.0F;
+  float deltaY = 0.0F;
+  float deltaZ = 0.0F;
+  float feedrateMmPerMin = 0.0F;
 
-  const float updatesPerSecond = 1000.0F / static_cast<float>(kMaxGCodeRateMs);
-  const float distancePerUpdateMm = fabsf(effectiveSpeedMmPerSec) / updatesPerSecond;
-  float feedrateMmPerMin = distancePerUpdateMm * updatesPerSecond * 60.0F;
-  if (effectivelyStationary && previousHeading != pose.heading) {
+  if (nudgeActive) {
+    deltaX = pendingNudgeDeltaX;
+    deltaY = pendingNudgeDeltaY;
     feedrateMmPerMin = kHeadingOnlyFeedrateDegPerSec * 60.0F;
+  } else {
+    const float distanceMm = effectiveSpeedMmPerSec * dtSec;
+    // Use the authoritative bearing from the received pose when available;
+    // fall back to locally tracked bearing until first update arrives.
+    const float headingRad = toRadians(receivedPose.valid ? receivedPose.bearing
+                                                           : static_cast<float>(bearingDeg));
+    deltaX = -distanceMm * sinf(headingRad);
+    deltaY = distanceMm * cosf(headingRad);
+    deltaZ = static_cast<float>(pendingBearingDeltaDeg);
+
+    feedrateMmPerMin = fabsf(effectiveSpeedMmPerSec) * 60.0F;
+    if (effectivelyStationary && pendingBearingDeltaDeg != 0) {
+      feedrateMmPerMin = kHeadingOnlyFeedrateDegPerSec * 60.0F;
+    }
   }
 
   char gcodeLine[64];
-  snprintf(gcodeLine, sizeof(gcodeLine), "G1 X%.3f Y%.3f Z%.3f F%.1f", pose.x, pose.y,
-           pose.heading, feedrateMmPerMin);
+  snprintf(gcodeLine, sizeof(gcodeLine), "G1 X%.3f Y%.3f Z%.3f F%.1f", deltaX, deltaY,
+           deltaZ, feedrateMmPerMin);
   streamLine(gcodeLine);
-  lastPoseUpdateMs = nowMs;
   lastGCodeSentMs = nowMs;
-}
-
-void applyVehicleSelection(uint8_t vehicle) {
-  currentVehicle = vehicle;
-  speedMmPerSec = 0;
-  poseDirty = false;
-
-  streamLines(kVehicleDeselectGCode[currentVehicle], 3);
-  bearingDeg = clampBearing(static_cast<int16_t>(vehiclePoses[currentVehicle].heading));
-  lastPoseUpdateMs = millis();
-  lastGCodeSentMs = lastPoseUpdateMs - kMaxGCodeRateMs;
-  streamCurrentPoseGCode();
-  streamLines(kVehicleSelectGCode[currentVehicle], 3);
-}
-
-uint8_t readVehicleSelectionRaw() {
-  uint8_t selected = 0;
-  for (uint8_t i = 0; i < kVehicleInputCount; ++i) {
-    if (digitalRead(kVehicleInputs[i]) == LOW) {
-      if (selected != 0) {
-        return 0;
-      }
-      selected = static_cast<uint8_t>(i + 1);
-    }
-  }
-  return selected;
-}
-
-void processVehicleSelection() {
-  const uint8_t rawVehicle = readVehicleSelectionRaw();
-  const uint32_t nowMs = millis();
-
-  if (rawVehicle != pendingVehicle) {
-    pendingVehicle = rawVehicle;
-    pendingVehicleSinceMs = nowMs;
-  }
-
-  if (pendingVehicle != currentVehicle &&
-      (nowMs - pendingVehicleSinceMs) >= kVehicleSettleMs) {
-    applyVehicleSelection(pendingVehicle);
-  }
+  pendingBearingDeltaDeg = 0;
+  pendingNudgeDeltaX = 0.0F;
+  pendingNudgeDeltaY = 0.0F;
 }
 
 bool isStopButtonPressed() { return digitalRead(kStopButtonInput) == LOW; }
 
-void resumeNormalStreamingFromReplay() {
-  if (!replayModeActive) {
-    return;
-  }
-
-  if (recordedGCodeCount > 0) {
-    restoreRecordedState(recordedGCode[replayIndex].state);
-    recordedGCodeCount = min(recordedGCodeCount, replayIndex + 1);
-  }
-
-  replayModeActive = false;
-  printReplayActive = false;
-  printReplayIndex = 0;
-  printReplayWaitingForOk = false;
-  speedMmPerSec = 0;
-}
-
 void processEncoders() {
-  if (!isStopButtonPressed()) {
-    const int8_t speedDelta = speedEncoder.readDelta();
-    if (speedDelta != 0) {
-      if (replayModeActive) {
-        resumeNormalStreamingFromReplay();
-      }
-      int8_t newSpeed = clampSpeed(static_cast<int32_t>(speedMmPerSec) + speedDelta);
-      // Snap to zero when moving towards zero and landing within the deadband.
-      // This allows speed to be set to exactly zero despite encoder noise near zero.
-      const bool movingTowardsZero = (abs(newSpeed) < abs(speedMmPerSec));
-      const bool withinDeadband =
-          (newSpeed <= kSpeedDeadbandMmPerSec && newSpeed >= -kSpeedDeadbandMmPerSec);
-      if (movingTowardsZero && withinDeadband) {
-        newSpeed = 0;
-      }
-      if (newSpeed != speedMmPerSec) {
-        speedMmPerSec = newSpeed;
-        poseDirty = true;
-      }
+  const bool nudgeActive = isNudgeActive();
+  const int8_t speedDelta = speedEncoder.readDelta();
+  if (nudgeActive && speedDelta != 0 && receivedPose.valid) {
+    const float nextX = clampFloat(receivedPose.x - (kNudgeStepMm * static_cast<float>(speedDelta)),
+                                   kPoseXMin, kPoseXMax);
+    const float appliedDeltaX = nextX - receivedPose.x;
+    if (appliedDeltaX != 0.0F) {
+      receivedPose.x = nextX;
+      pendingNudgeDeltaX += appliedDeltaX;
+      poseDirty = true;
+    }
+  } else if (!nudgeActive && speedDelta != 0 && !isStopButtonPressed()) {
+    int8_t newSpeed = clampSpeed(static_cast<int32_t>(speedMmPerSec) + speedDelta);
+    // Snap to zero when moving towards zero and landing within the deadband.
+    const bool movingTowardsZero = (abs(newSpeed) < abs(speedMmPerSec));
+    const bool withinDeadband =
+        (newSpeed <= kSpeedDeadbandMmPerSec && newSpeed >= -kSpeedDeadbandMmPerSec);
+    if (movingTowardsZero && withinDeadband) {
+      newSpeed = 0;
+    }
+    if (newSpeed != speedMmPerSec) {
+      speedMmPerSec = newSpeed;
+      poseDirty = true;
     }
   }
 
@@ -429,29 +263,39 @@ void processEncoders() {
   }
 
   if (bearingDelta != 0) {
-    if (replayModeActive) {
-      resumeNormalStreamingFromReplay();
-    }
-    const int16_t newBearing = clampBearing(static_cast<int16_t>(bearingDeg) + bearingDelta);
-    // Snap bearing to zero when a step towards zero would land within one degree.
-    // This allows heading to be set to exactly zero (north) despite encoder noise.
-    const int16_t snappedBearing =
-        (abs(newBearing) < abs(bearingDeg) && abs(newBearing) <= 1) ? 0 : newBearing;
-    if (snappedBearing != bearingDeg) {
-      bearingDeg = snappedBearing;
-      poseDirty = true;
+    if (nudgeActive && receivedPose.valid) {
+      const float nextY = clampFloat(receivedPose.y + (kNudgeStepMm * static_cast<float>(bearingDelta)),
+                                     kPoseYMin, kPoseYMax);
+      const float appliedDeltaY = nextY - receivedPose.y;
+      if (appliedDeltaY != 0.0F) {
+        receivedPose.y = nextY;
+        pendingNudgeDeltaY += appliedDeltaY;
+        poseDirty = true;
+      }
+    } else if (receivedPose.valid) {
+      // Apply encoder delta to the authoritative received bearing.
+      const float newBearing = static_cast<float>(
+          clampBearing(static_cast<int16_t>(receivedPose.bearing) + bearingDelta));
+      if (newBearing != receivedPose.bearing) {
+        receivedPose.bearing = newBearing;
+        pendingBearingDeltaDeg += bearingDelta;
+        poseDirty = true;
+      }
+    } else {
+      // No received pose yet; update the local fallback bearing.
+      const int16_t newBearing = clampBearing(static_cast<int16_t>(bearingDeg) + bearingDelta);
+      if (newBearing != bearingDeg) {
+        bearingDeg = newBearing;
+        pendingBearingDeltaDeg += bearingDelta;
+        poseDirty = true;
+      }
     }
   }
 }
 
 void processStopButton() {
-  if (!replayModeActive && isStopButtonPressed() && speedMmPerSec == 0 &&
-      recordedGCodeCount > 0) {
-    replayModeActive = true;
-    replayIndex = recordedGCodeCount - 1;
-    restoreRecordedState(recordedGCode[replayIndex].state);
-    speedMmPerSec = 0;
-    poseDirty = false;
+  if (isNudgeActive()) {
+    return;
   }
 
   if (!isStopButtonPressed() || speedMmPerSec == 0) {
@@ -477,66 +321,18 @@ void processStopButton() {
   lastStopDecelMs = nowMs;
 }
 
-void replayRecordedLine(size_t index, bool includeUsbDebug = true) {
-  if (index >= recordedGCodeCount) {
-    return;
-  }
-
-  replayIndex = index;
-  restoreRecordedState(recordedGCode[index].state);
-  speedMmPerSec = 0;
-  poseDirty = false;
-  streamLine(recordedGCode[index].line, false, includeUsbDebug);
-}
-
-void processReplayButtons() {
-  if (!replayModeActive || printReplayActive || speedMmPerSec != 0 || recordedGCodeCount == 0 ) {
-    return;
-  }
-
-  if (backwardButton.wasPressed() && replayIndex > 0) {
-    replayRecordedLine(replayIndex - 1);
-  }
-
-  if (forwardButton.wasPressed() && (replayIndex + 1) < recordedGCodeCount) {
-    replayRecordedLine(replayIndex + 1);
-  }
-
-  if (printButton.wasPressed()) {
-    printReplayActive = true;
-    printReplayIndex = 0;
-    printReplayWaitingForOk = false;
-  }
-}
-
-void processPrintReplay() {
-  if (!printReplayActive || recordedGCodeCount == 0) {
-    return;
-  }
-
-  if (printReplayIndex >= recordedGCodeCount) {
-    printReplayActive = false;
-    return;
-  }
-
-  replayRecordedLine(printReplayIndex++, false);
-  printReplayWaitingForOk = true;
-}
-
 void processPoseOutput() {
-  if (currentVehicle == 0 || replayModeActive) {
-    return;
-  }
-
+  const bool nudgeActive = isNudgeActive();
   const bool isMoving =
       (speedMmPerSec > kSpeedDeadbandMmPerSec || speedMmPerSec < -kSpeedDeadbandMmPerSec);
+  const bool hasNudgeDelta = (pendingNudgeDeltaX != 0.0F || pendingNudgeDeltaY != 0.0F);
 
-  if (!poseDirty && !isMoving) {
+  if (!poseDirty && !isMoving && !hasNudgeDelta) {
     return;
   }
 
   const uint32_t nowMs = millis();
-  if ((nowMs - lastGCodeSentMs) < kMaxGCodeRateMs) {
+  if (!nudgeActive && (nowMs - lastGCodeSentMs) < kMaxGCodeRateMs) {
     return;
   }
   streamCurrentPoseGCode();
@@ -547,49 +343,32 @@ void processPoseOutput() {
 
 void setup() {
   Serial.begin(kUsbSerialBaudRate);
-  for (uint8_t i = 0; i < kVehicleCount; ++i) {
-    vehiclePoses[i] = kInitialVehiclePoses[i];
-  }
-
-  clearRecordedGCode();
-  streamLines(kInitGCode, sizeof(kInitGCode) / sizeof(kInitGCode[0]));
-  pinMode(kGimbleLock, OUTPUT);
-  digitalWrite(kGimbleLock, HIGH);
-  pinMode(kOrthogonal, OUTPUT);
-  digitalWrite(kOrthogonal, HIGH);
   speedEncoder.configure(kSpeedEncoderA, kSpeedEncoderB, kSpeedEncoderTransitionsPerStep);
   speedEncoder.begin();
   pinMode(kBearingEncoderA, INPUT_PULLUP);
   pinMode(kBearingEncoderB, INPUT_PULLUP);
   lastBearingAState = static_cast<uint8_t>(digitalRead(kBearingEncoderA));
+  pinMode(kNudge, INPUT_PULLUP);
   pinMode(kStopButtonInput, INPUT_PULLUP);
-  forwardButton.begin();
-  backwardButton.begin();
-  printButton.begin();
-
-  for (uint8_t pin : kVehicleInputs) {
-    pinMode(pin, INPUT_PULLUP);
-  }
+  pinMode(kGimbleLock, OUTPUT);
+  pinMode(kOrthogonal, OUTPUT);
+  digitalWrite(kGimbleLock, HIGH);
+  digitalWrite(kOrthogonal, HIGH);
 
   setupSPIFFS();
   node.loadConfig();
   setupWiFi();
   setupMQTTComms();
 
-  pendingVehicle = readVehicleSelectionRaw();
-  pendingVehicleSinceMs = millis();
-  lastPoseUpdateMs = millis();
-  lastGCodeSentMs = lastPoseUpdateMs;
-  lastStopDecelMs = lastPoseUpdateMs;
+  lastGCodeSentMs = millis();
+  lastStopDecelMs = lastGCodeSentMs;
 }
 
 void loop() {
   //processCncSerialInput();
-  processVehicleSelection();
   processEncoders();
   processStopButton();
-  processReplayButtons();
-  processPrintReplay();
   processPoseOutput();
+  processBearingLeds();
 
 }
