@@ -28,5 +28,6 @@ void messageReceiverTask(void *pvParameters);
 void MQTTcallback(char* topic, byte* payload, unsigned int length);
 boolean checkMQTTState();
 unsigned long getMQTTUptime();
+boolean publishCurrentEncValue(int value);
 
 #endif // MQTTCOMMS_H

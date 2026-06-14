@@ -34,7 +34,9 @@ Ticker runMQTT;
 long MQTTConnectionTime;
 
 const char* GCodeDriverReporterTopic = "track/reporter/2600";
+const char* CurrentEncReporterTopic = "track/reporter/2610";
 char GCodeTopic[30];
+char CurrentEncTopic[30];
 
 const char* const kPoseReporterTopic = "track/reporter/2800";
 ReceivedPose receivedPose = {};
@@ -91,6 +93,13 @@ boolean publishMQTT(char* topic, char* message)
       return(true);
    }
    return(false);
+}
+
+boolean publishCurrentEncValue(int value)
+{
+  char payload[12];
+  snprintf(payload, sizeof(payload), "%d", value);
+  return publishMQTT(CurrentEncTopic, payload);
 }
 
 
@@ -167,6 +176,10 @@ void initTopics(char* currentNodeID)
   int i;
   for(i=0; i<30 && GCodeDriverReporterTopic[i] != 0; i++)GCodeTopic[i] = GCodeDriverReporterTopic[i];
   GCodeTopic[15]=currentNodeID[0];
-  GCodeTopic[16]=currentNodeID[1];  
+  GCodeTopic[16]=currentNodeID[1];
+
+  for(i=0; i<30 && CurrentEncReporterTopic[i] != 0; i++)CurrentEncTopic[i] = CurrentEncReporterTopic[i];
+  CurrentEncTopic[15]=currentNodeID[0];
+  CurrentEncTopic[16]=currentNodeID[1];
 
 }

@@ -25,14 +25,17 @@ constexpr float kPoseXMin = 0.0F;
 constexpr float kPoseXMax = 265.0F;
 constexpr float kPoseYMin = 0.0F;
 constexpr float kPoseYMax = 225.0F;
+constexpr uint32_t kVehicleEncSettleMs = 5000;
 
 // GPIO mappings.
 constexpr uint8_t kSpeedEncoderA = 13;          // Bit 00
 constexpr uint8_t kSpeedEncoderB = 12;          // Bit 01
 constexpr uint8_t kBearingEncoderA = 4;         // Bit 02
 constexpr uint8_t kBearingEncoderB = 14;        // Bit 03
-
-
+constexpr uint8_t kVehicleEnc1 = 16;            // Bit 04 
+constexpr uint8_t kVehicleEnc2 = 27;            // Bit 05
+constexpr uint8_t kVehicleEnc4 = 17;            // Bit 06
+constexpr uint8_t kVehicleEnc8 = 26;            // Bit 07
 constexpr uint8_t kNudge = 25;                  // Bit 08
 constexpr uint8_t kStopButtonInput = 32;        // Bit 0B
 
@@ -100,10 +103,48 @@ int8_t bearingEdgeDirectionSum = 0;
 int16_t pendingBearingDeltaDeg = 0;
 float pendingNudgeDeltaX = 0.0F;
 float pendingNudgeDeltaY = 0.0F;
+int currentEncValue = -1;
+uint8_t pendingEncValue = 0;
+uint32_t pendingEncSinceMs = 0;
+bool vehicleEncSawChangeSinceBoot = false;
 
 float toRadians(float deg) { return deg * DEG_TO_RAD; }
 
 bool isNudgeActive() { return digitalRead(kNudge) == LOW; }
+
+uint8_t readVehicleEncoderRawValue() {
+  uint8_t value = 0;
+  if (digitalRead(kVehicleEnc1) == LOW) {
+    value |= 0x01;
+  }
+  if (digitalRead(kVehicleEnc2) == LOW) {
+    value |= 0x02;
+  }
+  if (digitalRead(kVehicleEnc4) == LOW) {
+    value |= 0x04;
+  }
+  if (digitalRead(kVehicleEnc8) == LOW) {
+    value |= 0x08;
+  }
+  return value;
+}
+
+void processVehicleEncoderSwitch() {
+  const uint32_t nowMs = millis();
+  const uint8_t rawValue = readVehicleEncoderRawValue();
+
+  if (rawValue != pendingEncValue) {
+    pendingEncValue = rawValue;
+    pendingEncSinceMs = nowMs;
+    vehicleEncSawChangeSinceBoot = true;
+  }
+  if (vehicleEncSawChangeSinceBoot && pendingEncValue != currentEncValue &&
+      (nowMs - pendingEncSinceMs) >= kVehicleEncSettleMs) {
+    currentEncValue = pendingEncValue;
+    Serial.printf("currentEncValue: %d\n", currentEncValue);
+    publishCurrentEncValue(currentEncValue);
+  }
+}
 
 float clampFloat(float value, float minimum, float maximum) {
   if (value < minimum) {
@@ -348,6 +389,10 @@ void setup() {
   pinMode(kBearingEncoderA, INPUT_PULLUP);
   pinMode(kBearingEncoderB, INPUT_PULLUP);
   lastBearingAState = static_cast<uint8_t>(digitalRead(kBearingEncoderA));
+  pinMode(kVehicleEnc1, INPUT_PULLUP);
+  pinMode(kVehicleEnc2, INPUT_PULLUP);
+  pinMode(kVehicleEnc4, INPUT_PULLUP);
+  pinMode(kVehicleEnc8, INPUT_PULLUP);
   pinMode(kNudge, INPUT_PULLUP);
   pinMode(kStopButtonInput, INPUT_PULLUP);
   pinMode(kGimbleLock, OUTPUT);
@@ -362,10 +407,15 @@ void setup() {
 
   lastGCodeSentMs = millis();
   lastStopDecelMs = lastGCodeSentMs;
+  currentEncValue = -1;
+  pendingEncValue = readVehicleEncoderRawValue();
+  pendingEncSinceMs = millis();
+  vehicleEncSawChangeSinceBoot = false;
 }
 
 void loop() {
   //processCncSerialInput();
+  processVehicleEncoderSwitch();
   processEncoders();
   processStopButton();
   processPoseOutput();
