@@ -17,10 +17,14 @@
 namespace {
 constexpr int8_t kSpeedMin = -30;
 constexpr int8_t kSpeedMax = 30;
-constexpr uint16_t kMaxGCodeRateMs = 1000;  // 1 Hz
+constexpr uint16_t kMaxGCodeRateMs = 1000;  // Pose settle window after encoder activity
 constexpr int8_t kSpeedDeadbandMmPerSec = 3;  // speeds within [-deadband, +deadband] are treated as stopped
 constexpr float kHeadingOnlyFeedrateDegPerSec = 50.0F;
 constexpr float kNudgeStepMm = 1.0F;
+constexpr float kNudgeMaxStepMm = 20.0F;     // Hard limit on nudge step size to prevent runaway if encoder is turned too fast
+constexpr uint32_t kNudgeRampWindowMs = 250;   // Time window for ramping up nudge step size based on encoder speed
+constexpr int16_t kNudgeMaxMultiplier = 20;   // Maximum multiplier for nudge step size based on encoder speed
+constexpr uint32_t kSpeedNudgeDebounceMs = 50;  // Ignore back-to-back speed encoder edges that are too close together
 constexpr float kPoseXMin = 0.0F;
 constexpr float kPoseXMax = 265.0F;
 constexpr float kPoseYMin = 0.0F;
@@ -38,8 +42,10 @@ constexpr uint8_t kVehicleEnc4 = 17;            // Bit 06
 constexpr uint8_t kVehicleEnc8 = 26;            // Bit 07
 constexpr uint8_t kNudge = 25;                  // Bit 08
 constexpr uint8_t kStopButtonInput = 32;        // Bit 0B
-
-constexpr uint8_t kGimbleLock = 22;              // Bit 0D
+constexpr uint8_t kSetButtonInput = 19;      // Bit 0A   (using the Replay button on the panel atm)
+constexpr uint8_t kBackButtonInput = 18;        // Bit 09
+constexpr uint8_t kForwardButtonInput = 21;     // Bit 0C
+constexpr uint8_t kGimbleLock = 22;             // Bit 0D
 constexpr uint8_t kOrthogonal = 23;             // Bit 0E
 
 // GPIO 33   Bit 0F
@@ -49,6 +55,48 @@ constexpr int8_t kSpeedEncoderTransitionsPerStep = 2;
 constexpr int8_t kBearingEncoderTransitionsPerDegree = kSpeedEncoderTransitionsPerStep;
 constexpr bool kBearingDirectionInverted = false;
 constexpr uint32_t kUsbSerialBaudRate = 115200;
+constexpr uint16_t kStopSetDebounceMs = 40;
+constexpr size_t kWaypointBufferSize = 64;
+
+struct PoseSnapshot {
+  float x;
+  float y;
+  float bearing;
+  uint32_t timestampMs;
+};
+
+struct DebouncedActiveLowButton {
+  uint8_t pin = 0;
+  bool stablePressed = false;
+  bool lastRawPressed = false;
+  uint32_t lastRawChangeMs = 0;
+
+  void begin(uint8_t inputPin) {
+    pin = inputPin;
+    const bool pressed = (digitalRead(pin) == LOW);
+    stablePressed = pressed;
+    lastRawPressed = pressed;
+    lastRawChangeMs = millis();
+  }
+
+  bool consumePressedEdge(uint32_t nowMs) {
+    const bool rawPressed = (digitalRead(pin) == LOW);
+    if (rawPressed != lastRawPressed) {
+      lastRawPressed = rawPressed;
+      lastRawChangeMs = nowMs;
+    }
+
+    if ((nowMs - lastRawChangeMs) < kStopSetDebounceMs) {
+      return false;
+    }
+
+    if (stablePressed != rawPressed) {
+      stablePressed = rawPressed;
+      return stablePressed;
+    }
+    return false;
+  }
+};
 
 struct Encoder {
   uint8_t pinA;
@@ -97,6 +145,7 @@ int16_t bearingDeg = 0;
 
 bool poseDirty = false;
 uint32_t lastGCodeSentMs = 0;
+uint32_t lastPoseChangeMs = 0;
 uint32_t lastStopDecelMs = 0;
 uint8_t lastBearingAState = HIGH;
 int8_t bearingEdgeDirectionSum = 0;
@@ -107,10 +156,24 @@ int currentEncValue = -1;
 uint8_t pendingEncValue = 0;
 uint32_t pendingEncSinceMs = 0;
 bool vehicleEncSawChangeSinceBoot = false;
+uint32_t lastNudgeXEventMs = 0;
+uint32_t lastNudgeYEventMs = 0;
+PoseSnapshot waypointBuffer[kWaypointBufferSize] = {};
+size_t waypointWriteIndex = 0;
+size_t waypointCount = 0;
+size_t waypointReadOffsetFromNewest = 0;
+DebouncedActiveLowButton stopSetButton;
+DebouncedActiveLowButton backButton;
+DebouncedActiveLowButton forwardButton;
 
 float toRadians(float deg) { return deg * DEG_TO_RAD; }
 
 bool isNudgeActive() { return digitalRead(kNudge) == LOW; }
+
+bool isSpeedEffectivelyStationary() {
+  return speedMmPerSec <= kSpeedDeadbandMmPerSec &&
+         speedMmPerSec >= -kSpeedDeadbandMmPerSec;
+}
 
 uint8_t readVehicleEncoderRawValue() {
   uint8_t value = 0;
@@ -201,6 +264,27 @@ int8_t clampSpeed(int32_t value) {
   return static_cast<int8_t>(value);
 }
 
+float computeNudgeDeltaMm(int8_t encoderDelta, uint32_t& lastEventMs, uint32_t nowMs) {
+  if (encoderDelta == 0) {
+    return 0.0F;
+  }
+
+  // Faster consecutive detents increase nudge size; slow turns stay at 1 mm.
+  const uint32_t elapsedMs =
+      (lastEventMs == 0) ? kNudgeRampWindowMs : (nowMs - lastEventMs);
+  lastEventMs = nowMs;
+
+  const uint32_t clampedElapsedMs = min(elapsedMs, kNudgeRampWindowMs);
+  const int16_t multiplier =
+      1 + static_cast<int16_t>(((kNudgeRampWindowMs - clampedElapsedMs) *
+                                static_cast<uint32_t>(kNudgeMaxMultiplier - 1)) /
+                               kNudgeRampWindowMs);
+
+  float requested = kNudgeStepMm * static_cast<float>(abs(encoderDelta) * multiplier);
+  requested = min(requested, kNudgeMaxStepMm);
+  return (encoderDelta < 0) ? -requested : requested;
+}
+
 void streamLine(const char* line, bool includeUsbDebug = true) {
   publishMQTT(GCodeTopic, (char *)line);
 #if GCODE_USB_DEBUG
@@ -215,10 +299,10 @@ void streamCurrentPoseGCode() {
   const uint32_t nowMs = millis();
   const bool nudgeActive = isNudgeActive();
   const float dtSec = static_cast<float>(nowMs - lastGCodeSentMs) / 1000.0F;
+  bool limitHit = false;
 
   // Treat speed as zero when within the deadband, consistent with processPoseOutput().
-  const bool effectivelyStationary =
-      (speedMmPerSec <= kSpeedDeadbandMmPerSec && speedMmPerSec >= -kSpeedDeadbandMmPerSec);
+  const bool effectivelyStationary = isSpeedEffectivelyStationary();
   const float effectiveSpeedMmPerSec = effectivelyStationary ? 0.0F : static_cast<float>(speedMmPerSec);
 
   float deltaX = 0.0F;
@@ -240,10 +324,31 @@ void streamCurrentPoseGCode() {
     deltaY = distanceMm * cosf(headingRad);
     deltaZ = static_cast<float>(pendingBearingDeltaDeg);
 
+    if (receivedPose.valid) {
+      const float unclampedX = receivedPose.x + deltaX;
+      const float unclampedY = receivedPose.y + deltaY;
+      const float clampedX = clampFloat(unclampedX, kPoseXMin, kPoseXMax);
+      const float clampedY = clampFloat(unclampedY, kPoseYMin, kPoseYMax);
+
+      limitHit = (clampedX != unclampedX) || (clampedY != unclampedY);
+      deltaX = clampedX - receivedPose.x;
+      deltaY = clampedY - receivedPose.y;
+
+      // Keep local pose tracking aligned with the clamped output pose.
+      receivedPose.x = clampedX;
+      receivedPose.y = clampedY;
+    }
+
     feedrateMmPerMin = fabsf(effectiveSpeedMmPerSec) * 60.0F;
     if (effectivelyStationary && pendingBearingDeltaDeg != 0) {
       feedrateMmPerMin = kHeadingOnlyFeedrateDegPerSec * 60.0F;
     }
+  }
+
+  if (limitHit && speedMmPerSec != 0) {
+    speedMmPerSec = 0;
+    poseDirty = true;
+    lastPoseChangeMs = nowMs;
   }
 
   char gcodeLine[64];
@@ -258,17 +363,142 @@ void streamCurrentPoseGCode() {
 
 bool isStopButtonPressed() { return digitalRead(kStopButtonInput) == LOW; }
 
+size_t getWaypointBufferIndexFromNewestOffset(size_t offsetFromNewest) {
+  // waypointWriteIndex always points to the next write slot.
+  return (waypointWriteIndex + kWaypointBufferSize - 1U - offsetFromNewest) % kWaypointBufferSize;
+}
+
+bool getWaypointByOffsetFromNewest(size_t offsetFromNewest, PoseSnapshot& outPose) {
+  if (waypointCount == 0 || offsetFromNewest >= waypointCount) {
+    return false;
+  }
+  const size_t index = getWaypointBufferIndexFromNewestOffset(offsetFromNewest);
+  outPose = waypointBuffer[index];
+  return true;
+}
+
+void publishWaypointSnapshot(const PoseSnapshot& pose, const char* sourceLabel,
+                             bool publishToGCodeTopic = false) {
+  const bool published = publishToGCodeTopic
+                             ? publishWaypointAndGCodePose(pose.x, pose.y, pose.bearing)
+                             : publishWaypointPose(pose.x, pose.y, pose.bearing);
+  Serial.printf("%s waypoint: G1 X%.3f Y%.3f Z%.3f (%s) readOffset=%u count=%u\n",
+                sourceLabel,
+                pose.x,
+                pose.y,
+                pose.bearing,
+                published ? "published" : "publish failed",
+                static_cast<unsigned>(waypointReadOffsetFromNewest),
+                static_cast<unsigned>(waypointCount));
+}
+
+void resetWaypointWritePointerAfterReadOffset() {
+  if (waypointCount == 0 || waypointReadOffsetFromNewest == 0) {
+    return;
+  }
+
+  // If we're reading older entries, branch from that point by discarding newer history.
+  if (waypointReadOffsetFromNewest >= waypointCount) {
+    waypointReadOffsetFromNewest = waypointCount - 1U;
+  }
+  waypointWriteIndex =
+      (waypointWriteIndex + kWaypointBufferSize - waypointReadOffsetFromNewest) %
+      kWaypointBufferSize;
+  waypointCount -= waypointReadOffsetFromNewest;
+  waypointReadOffsetFromNewest = 0;
+}
+
+void storeWaypointPose(float x, float y, float bearing, uint32_t timestampMs) {
+  waypointBuffer[waypointWriteIndex] = PoseSnapshot{x, y, bearing, timestampMs};
+  waypointWriteIndex = (waypointWriteIndex + 1U) % kWaypointBufferSize;
+  if (waypointCount < kWaypointBufferSize) {
+    waypointCount++;
+  }
+}
+
+void processStopSetButton() {
+  const uint32_t nowMs = millis();
+  if (!stopSetButton.consumePressedEdge(nowMs)) {
+    return;
+  }
+
+  if (!receivedPose.valid) {
+    Serial.println("Stop-set pressed but no valid pose available");
+    return;
+  }
+
+  storeWaypointPose(receivedPose.x, receivedPose.y, receivedPose.bearing, nowMs);
+  waypointReadOffsetFromNewest = 0;
+  PoseSnapshot newest = {};
+  if (getWaypointByOffsetFromNewest(waypointReadOffsetFromNewest, newest)) {
+    publishWaypointSnapshot(newest, "Set");
+  }
+}
+
+void processBackButton() {
+  const uint32_t nowMs = millis();
+  if (!backButton.consumePressedEdge(nowMs)) {
+    return;
+  }
+
+  if (waypointCount == 0) {
+    Serial.println("Back pressed but waypoint buffer is empty");
+    return;
+  }
+
+  if ((waypointReadOffsetFromNewest + 1U) < waypointCount) {
+    waypointReadOffsetFromNewest++;
+  }
+
+  PoseSnapshot pose = {};
+  if (getWaypointByOffsetFromNewest(waypointReadOffsetFromNewest, pose)) {
+    publishWaypointSnapshot(pose, "Back", true);
+  }
+}
+
+void processForwardButton() {
+  const uint32_t nowMs = millis();
+  if (!forwardButton.consumePressedEdge(nowMs)) {
+    return;
+  }
+
+  if (waypointCount == 0) {
+    Serial.println("Forward pressed but waypoint buffer is empty");
+    return;
+  }
+
+  if (waypointReadOffsetFromNewest > 0) {
+    waypointReadOffsetFromNewest--;
+  }
+
+  PoseSnapshot pose = {};
+  if (getWaypointByOffsetFromNewest(waypointReadOffsetFromNewest, pose)) {
+    publishWaypointSnapshot(pose, "Forward", true);
+  }
+}
+
 void processEncoders() {
+  const uint32_t nowMs = millis();
   const bool nudgeActive = isNudgeActive();
   const int8_t speedDelta = speedEncoder.readDelta();
-  if (nudgeActive && speedDelta != 0 && receivedPose.valid) {
-    const float nextX = clampFloat(receivedPose.x - (kNudgeStepMm * static_cast<float>(speedDelta)),
-                                   kPoseXMin, kPoseXMax);
+  const bool speedNudgeDebounced =
+      nudgeActive && speedDelta != 0 && receivedPose.valid && lastNudgeXEventMs != 0 &&
+      (nowMs - lastNudgeXEventMs) < kSpeedNudgeDebounceMs;
+
+  if (!nudgeActive) {
+    lastNudgeXEventMs = 0;
+    lastNudgeYEventMs = 0;
+  }
+
+  if (nudgeActive && speedDelta != 0 && receivedPose.valid && !speedNudgeDebounced) {
+    const float xNudgeDeltaMm = computeNudgeDeltaMm(speedDelta, lastNudgeXEventMs, nowMs);
+    const float nextX = clampFloat(receivedPose.x - xNudgeDeltaMm, kPoseXMin, kPoseXMax);
     const float appliedDeltaX = nextX - receivedPose.x;
     if (appliedDeltaX != 0.0F) {
       receivedPose.x = nextX;
       pendingNudgeDeltaX += appliedDeltaX;
       poseDirty = true;
+        lastPoseChangeMs = nowMs;
     }
   } else if (!nudgeActive && speedDelta != 0 && !isStopButtonPressed()) {
     int8_t newSpeed = clampSpeed(static_cast<int32_t>(speedMmPerSec) + speedDelta);
@@ -282,6 +512,7 @@ void processEncoders() {
     if (newSpeed != speedMmPerSec) {
       speedMmPerSec = newSpeed;
       poseDirty = true;
+      lastPoseChangeMs = nowMs;
     }
   }
 
@@ -305,13 +536,14 @@ void processEncoders() {
 
   if (bearingDelta != 0) {
     if (nudgeActive && receivedPose.valid) {
-      const float nextY = clampFloat(receivedPose.y + (kNudgeStepMm * static_cast<float>(bearingDelta)),
-                                     kPoseYMin, kPoseYMax);
+      const float yNudgeDeltaMm = computeNudgeDeltaMm(bearingDelta, lastNudgeYEventMs, nowMs);
+      const float nextY = clampFloat(receivedPose.y + yNudgeDeltaMm, kPoseYMin, kPoseYMax);
       const float appliedDeltaY = nextY - receivedPose.y;
       if (appliedDeltaY != 0.0F) {
         receivedPose.y = nextY;
         pendingNudgeDeltaY += appliedDeltaY;
         poseDirty = true;
+        lastPoseChangeMs = nowMs;
       }
     } else if (receivedPose.valid) {
       // Apply encoder delta to the authoritative received bearing.
@@ -321,6 +553,7 @@ void processEncoders() {
         receivedPose.bearing = newBearing;
         pendingBearingDeltaDeg += bearingDelta;
         poseDirty = true;
+        lastPoseChangeMs = nowMs;
       }
     } else {
       // No received pose yet; update the local fallback bearing.
@@ -329,6 +562,7 @@ void processEncoders() {
         bearingDeg = newBearing;
         pendingBearingDeltaDeg += bearingDelta;
         poseDirty = true;
+        lastPoseChangeMs = nowMs;
       }
     }
   }
@@ -358,24 +592,25 @@ void processStopButton() {
   if (newSpeed != speedMmPerSec) {
     speedMmPerSec = static_cast<int8_t>(newSpeed);
     poseDirty = true;
+    lastPoseChangeMs = nowMs;
   }
   lastStopDecelMs = nowMs;
 }
 
 void processPoseOutput() {
-  const bool nudgeActive = isNudgeActive();
-  const bool isMoving =
-      (speedMmPerSec > kSpeedDeadbandMmPerSec || speedMmPerSec < -kSpeedDeadbandMmPerSec);
-  const bool hasNudgeDelta = (pendingNudgeDeltaX != 0.0F || pendingNudgeDeltaY != 0.0F);
-
-  if (!poseDirty && !isMoving && !hasNudgeDelta) {
-    return;
-  }
-
   const uint32_t nowMs = millis();
-  if (!nudgeActive && (nowMs - lastGCodeSentMs) < kMaxGCodeRateMs) {
+  const bool periodicDriveUpdateDue =
+      !isNudgeActive() && !isSpeedEffectivelyStationary() &&
+      (nowMs - lastGCodeSentMs) >= kMaxGCodeRateMs;
+
+  if (!poseDirty && !periodicDriveUpdateDue) {
     return;
   }
+
+  if (poseDirty && !periodicDriveUpdateDue && (nowMs - lastPoseChangeMs) < kMaxGCodeRateMs) {
+    return;
+  }
+
   streamCurrentPoseGCode();
   poseDirty = false;
 }
@@ -395,6 +630,9 @@ void setup() {
   pinMode(kVehicleEnc8, INPUT_PULLUP);
   pinMode(kNudge, INPUT_PULLUP);
   pinMode(kStopButtonInput, INPUT_PULLUP);
+  pinMode(kSetButtonInput, INPUT_PULLUP);
+  pinMode(kBackButtonInput, INPUT_PULLUP);
+  pinMode(kForwardButtonInput, INPUT_PULLUP);
   pinMode(kGimbleLock, OUTPUT);
   pinMode(kOrthogonal, OUTPUT);
   digitalWrite(kGimbleLock, HIGH);
@@ -406,11 +644,15 @@ void setup() {
   setupMQTTComms();
 
   lastGCodeSentMs = millis();
+  lastPoseChangeMs = lastGCodeSentMs;
   lastStopDecelMs = lastGCodeSentMs;
   currentEncValue = -1;
   pendingEncValue = readVehicleEncoderRawValue();
   pendingEncSinceMs = millis();
   vehicleEncSawChangeSinceBoot = false;
+  stopSetButton.begin(kSetButtonInput);
+  backButton.begin(kBackButtonInput);
+  forwardButton.begin(kForwardButtonInput);
 }
 
 void loop() {
@@ -418,6 +660,9 @@ void loop() {
   processVehicleEncoderSwitch();
   processEncoders();
   processStopButton();
+  processStopSetButton();
+  processBackButton();
+  processForwardButton();
   processPoseOutput();
   processBearingLeds();
 

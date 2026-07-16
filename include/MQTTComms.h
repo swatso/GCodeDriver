@@ -10,6 +10,7 @@ struct ReceivedPose {
   float x;
   float y;
   float bearing;  // absolute heading in degrees, sourced from Z axis of received G1
+  uint32_t sequence;  // increments on each successfully parsed inbound pose update
   bool valid;
 };
 
@@ -29,5 +30,7 @@ void MQTTcallback(char* topic, byte* payload, unsigned int length);
 boolean checkMQTTState();
 unsigned long getMQTTUptime();
 boolean publishCurrentEncValue(int value);
+boolean publishWaypointPose(float x, float y, float bearing);
+boolean publishWaypointAndGCodePose(float x, float y, float bearing);
 
 #endif // MQTTCOMMS_H

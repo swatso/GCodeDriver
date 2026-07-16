@@ -1,12 +1,19 @@
 # GCodeDriver
-Generates and Streams GCode for Marlin based X-Y diarama controller
+ESP32 firmware for a Marlin-based X-Y diorama controller.
 
-Set `-DGCODE_USB_DEBUG=1` in your PlatformIO `build_flags` to mirror streamed GCode to USB
-and to echo CNC serial input lines to USB with a `Marlin:` prefix.
+The firmware listens for pose updates over MQTT, converts local inputs into streamed GCode, and
+keeps the controller state in sync with the most recent received pose. It supports two encoder
+driving modes: nudge mode for small X/Y adjustments, and speed/bearing mode for continuous motion
+control. Encoder changes are debounced so a single twist publishes one settled pose update instead
+of a burst of intermediate moves.
 
-The firmware records streamed GCode lines for stepwise replay. STOP still halts motion, and once
-stopped you can use active-low GPIO buttons on 33 (FORWARD), 18 (BACKWARD), and 19 (PRINT) to
-step through or replay the recorded buffer.
+Local controls include STOP, SET, BACK, and FORWARD buttons, along with a vehicle encoder input
+that is published after it settles. The firmware also records streamed poses for stepwise replay,
+stores its Wi-Fi and broker configuration in SPIFFS, and serves the web UI assets found under
+`data/`.
+
+Set `-DGCODE_USB_DEBUG=1` in your PlatformIO `build_flags` to mirror streamed GCode to USB and to
+echo CNC serial input lines to USB with a `Marlin:` prefix.
 
 ## Reusable Marlin Handshake Helper
 

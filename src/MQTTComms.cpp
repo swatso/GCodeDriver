@@ -35,8 +35,10 @@ long MQTTConnectionTime;
 
 const char* GCodeDriverReporterTopic = "track/reporter/2600";
 const char* CurrentEncReporterTopic = "track/reporter/2610";
+const char* WayPointReporterTopic = "track/reporter/2620";
 char GCodeTopic[30];
 char CurrentEncTopic[30];
+char WayPointTopic[30];
 
 const char* const kPoseReporterTopic = "track/reporter/2800";
 ReceivedPose receivedPose = {};
@@ -90,6 +92,7 @@ boolean publishMQTT(char* topic, char* message)
    if (client.connected())
    {
       client.publish(topic , message);
+      Serial.printf("[MQTT] Published to topic: %s, message: %s\n", topic, message);
       return(true);
    }
    return(false);
@@ -98,8 +101,36 @@ boolean publishMQTT(char* topic, char* message)
 boolean publishCurrentEncValue(int value)
 {
   char payload[12];
-  snprintf(payload, sizeof(payload), "%d", value);
+  int scaledSpeed = 100 + value * 200;
+  snprintf(payload, sizeof(payload), "%d", scaledSpeed);
   return publishMQTT(CurrentEncTopic, payload);
+}
+
+boolean publishWaypointPose(float x, float y, float bearing)
+{
+  char payload[64];
+  snprintf(payload, sizeof(payload), "G1 X%.3f Y%.3f Z%.3f", x, y, bearing);
+  return publishMQTT(WayPointTopic, payload);
+}
+
+boolean publishWaypointAndGCodePose(float x, float y, float bearing)
+{
+  char waypointPayload[64];
+  snprintf(waypointPayload, sizeof(waypointPayload), "G1 X%.3f Y%.3f Z%.3f", x, y, bearing);
+  const bool waypointPublished = publishMQTT(WayPointTopic, waypointPayload);
+
+  if (!receivedPose.valid) {
+    Serial.println("[MQTT] Cannot publish relative GCode pose without a received pose");
+    return false;
+  }
+
+  char gcodePayload[64];
+  const float deltaX = x - receivedPose.x;
+  const float deltaY = y - receivedPose.y;
+  const float deltaZ = bearing - receivedPose.bearing;
+  snprintf(gcodePayload, sizeof(gcodePayload), "G1 X%.3f Y%.3f Z%.3f", deltaX, deltaY, deltaZ);
+  const bool gcodePublished = publishMQTT(GCodeTopic, gcodePayload);
+  return waypointPublished && gcodePublished;
 }
 
 
@@ -147,14 +178,22 @@ void MQTTcallback(char* topic, byte* payload, unsigned int length)
   }
   memcpy(buf, payload, length);
   buf[length] = '\0';
-
   float x, y, bearing, f;
   if (sscanf(buf, "G1 X%f Y%f Z%f F%f", &x, &y, &bearing, &f) == 4) {
     receivedPose.x = x;
     receivedPose.y = y;
     receivedPose.bearing = bearing;
+    receivedPose.sequence++;
     receivedPose.valid = true;
     Serial.printf("[MQTT] Received pose: X=%.3f, Y=%.3f, Bearing=%.3f, F=%.3f\n", x, y, bearing, f);
+  }
+  else if (sscanf(buf, "G1 X%f Y%f Z%f", &x, &y, &bearing) == 3) {
+    receivedPose.x = x;
+    receivedPose.y = y;
+    receivedPose.bearing = bearing;
+    receivedPose.sequence++;
+    receivedPose.valid = true;
+//    Serial.printf("[MQTT] Received pose: X=%.3f, Y=%.3f, Bearing=%.3f\n", x, y, bearing);
   }
 }
 
@@ -181,5 +220,9 @@ void initTopics(char* currentNodeID)
   for(i=0; i<30 && CurrentEncReporterTopic[i] != 0; i++)CurrentEncTopic[i] = CurrentEncReporterTopic[i];
   CurrentEncTopic[15]=currentNodeID[0];
   CurrentEncTopic[16]=currentNodeID[1];
+
+  for(i=0; i<30 && WayPointReporterTopic[i] != 0; i++)WayPointTopic[i] = WayPointReporterTopic[i];
+  WayPointTopic[15]=currentNodeID[0];
+  WayPointTopic[16]=currentNodeID[1];
 
 }
