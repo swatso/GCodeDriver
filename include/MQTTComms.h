@@ -15,22 +15,22 @@ struct ReceivedPose {
 };
 
 extern ReceivedPose receivedPose;
+extern char GCodeTopic[30];
+extern char CurrentEncTopic[30];
+extern char WayPointTopic[30];
+extern char HomeTopic[30];
+extern char LockTopic[30];
+extern char UnlockTopic[30];
 
 void setupMQTTComms();
 void initTopics(char* currentNodeID);
 boolean connectMQTTClient();
-boolean  subscribeTopics();
-boolean MQTTPublishNext();
-boolean publishBit(byte bitNo);
-boolean publishMQTT(char* topic, char* message);
+boolean publishMQTT(const char* topic, const char* message);
 void serviceConnection();
-void sensorReceiverTask(void *pvParameters);
-void messageReceiverTask(void *pvParameters);
 void MQTTcallback(char* topic, byte* payload, unsigned int length);
 boolean checkMQTTState();
 unsigned long getMQTTUptime();
-boolean publishCurrentEncValue(int value);
-boolean publishWaypointPose(float x, float y, float bearing);
-boolean publishWaypointAndGCodePose(float x, float y, float bearing);
+boolean publishCurrentSpeedValue(int value);
+boolean publishWaypointPose(int x, int y, int bearing);
 
 #endif // MQTTCOMMS_H
