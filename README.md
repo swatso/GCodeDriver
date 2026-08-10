@@ -15,6 +15,25 @@ stores its Wi-Fi and broker configuration in SPIFFS, and serves the web UI asset
 Set `-DGCODE_USB_DEBUG=1` in your PlatformIO `build_flags` to mirror streamed GCode to USB and to
 echo CNC serial input lines to USB with a `Marlin:` prefix.
 
+## PlatformIO Upload Profiles
+
+The default `esp32dev` environment keeps the existing USB/serial upload flow.
+
+For OTA uploads there are two options:
+
+1. Use the VS Code tasks `OTA: Upload Firmware` and `OTA: Upload Filesystem`. These prompt for:
+	- ESP32 host/IP (`--upload-port`)
+	- PC IP on the isolated AP (`espota --host_ip`)
+	- PC OTA listen port (`espota --host_port`)
+2. For command-line OTA uploads, set these Windows environment variables in the same shell before running `pio`:
+	- `OTA_HOST_IP` (your PC IP on the isolated AP)
+	- `OTA_HOST_PORT` (the OTA listen port, for example `3233`)
+
+If you prefer the command line, the `esp32dev-ota` environment still supports both firmware and filesystem uploads:
+
+1. `pio run -e esp32dev-ota -t upload`
+2. `pio run -e esp32dev-ota -t uploadfs`
+
 ## Reusable Marlin Handshake Helper
 
 This repository now includes a reusable helper in include/marlin_handshake.h that implements

@@ -24,12 +24,12 @@ constexpr bool kBearingDirectionInverted = false;
 constexpr unsigned long kBearingEncoderAggregationWindowMs = 1000;
 
 // Compile-time speed mapping values (mm/s); edit as needed.
-constexpr int kSpeedValue1 = 10;
-constexpr int kSpeedValue2 = 100;
-constexpr int kSpeedValue3 = 500;
-constexpr int kSpeedValue4 = 1000;
-constexpr int kSpeedValue5 = 2000;
-constexpr int kSpeedValue6 = 3000;
+constexpr int kSpeedValue1 = 100;
+constexpr int kSpeedValue2 = 150;
+constexpr int kSpeedValue3 = 200;
+constexpr int kSpeedValue4 = 350;
+constexpr int kSpeedValue5 = 500;
+constexpr int kSpeedValue6 = 1000;
 constexpr unsigned long kSpeedSettlingTimeMs = 2000;
 
 uint8_t lastBearingAState = HIGH;

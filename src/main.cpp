@@ -20,6 +20,7 @@
 namespace {
 
 constexpr uint32_t kUsbSerialBaudRate = 115200;
+constexpr uint32_t kWiFiReconnectIntervalMs = 15000;
 
 }  // namespace
 
@@ -34,6 +35,15 @@ void setup() {
 }
 
 void loop() {
+  serviceWiFi();
+
+  static uint32_t lastWiFiServiceMs = 0;
+  const uint32_t nowMs = millis();
+  if (nowMs - lastWiFiServiceMs >= kWiFiReconnectIntervalMs) {
+    lastWiFiServiceMs = nowMs;
+    checkWiFiConnection();
+  }
+
   serviceSwitchMatrixScanner();
   gpio::bearingEncoderHelper();
   gpio::speedHelper();

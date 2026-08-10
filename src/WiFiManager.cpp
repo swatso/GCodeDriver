@@ -144,8 +144,13 @@ void  checkWiFiConnection()
   }
   else 
   {
-    Serial.print("(checkWiFiConnection) WiFi never connected");
+    return;
   }
+}
+
+void serviceWiFi()
+{
+  ArduinoOTA.handle();
 }
 
 void setupWiFi() 

@@ -1,4 +1,5 @@
 #include "PoseTracking.h"
+#include "MQTTComms.h"
 
 namespace {
 
@@ -58,6 +59,7 @@ namespace PoseTracking {
 
 bool add(const Pose& pose) {
   poseBuffer[writeIndex] = pose;
+  publishWaypointPose(pose.x, pose.y, pose.bearing);
   outputIndex = writeIndex;
   writeIndex = (writeIndex + 1U) % kPoseBufferSize;
   if (storedCount < kPoseBufferSize) {

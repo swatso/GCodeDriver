@@ -11,6 +11,7 @@ int WiFiGetRSSI();
 void setupWiFi(); 
 bool initWiFi();                                            
 void checkWiFiConnection();
+void serviceWiFi();
 
 extern char GCodeTopic[];
 
